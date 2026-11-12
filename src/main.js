@@ -10,6 +10,7 @@ import { Meadow } from './world/meadow.js';
 import { Input } from './player/input.js';
 import { Flight, SPEEDS } from './player/flight.js';
 import { Rider } from './player/rider.js';
+import { Catbus } from './player/catbus.js';
 import { ChaseCamera } from './player/camera.js';
 import { Wake } from './fx/wake.js';
 import { VortexWake } from './fx/vortex.js';
@@ -95,6 +96,7 @@ async function boot() {
 
   setLoad(0.08, 'raising the island…');
   const riderLoad = Rider.load(renderer);
+  const catbusLoad = Catbus.load(renderer);
   const propsLoad = Props.load();
   const townLoad = Town.load(renderer);
   const terrain = (game.terrain = await Terrain.load(renderer));
@@ -138,7 +140,8 @@ async function boot() {
 
   setLoad(0.9, 'waking the broom…');
   const rider = (game.rider = await riderLoad);
-  pipeline.overlay.add(rider.group, rider.lights);
+  const catbus = (game.catbus = await catbusLoad);
+  pipeline.overlay.add(rider.group, rider.lights, catbus.group, catbus.beaconMesh);
   pipeline.overlay.environment = sky.bakeEnvironment(renderer);
   const vortex = (game.vortex = new VortexWake(terrain));
   vortex.river = river;
@@ -168,6 +171,10 @@ async function boot() {
   game.chase.mode = 2;                       // the title screen watches from further back
   game.chase.dist = 14; game.chase.height = 4.2;
   game.gameplay = new Gameplay(game);        // landing pads, deliveries, the kickflip (asleep until game.town exists)
+  {
+    const c = titleCircuit();
+    catbus.placeInitial(game, c.x - c.r * 0.62, c.z - 55, 130);
+  }
 
   resize();
   setLoad(1);
@@ -268,6 +275,7 @@ function advance(dt, ctl) {
   game.gameplay.update(dt, ctl);             // may take the broom over (flight.auto) to land it
   flight.update(dt, ctl, t);
   rider.update(dt, t, flight, terrain);
+  game.catbus?.syncRiderHop(dt, rider);
   if (flight.touchdown > 0) fx.slam(flight, flight.touchdown, rider.sunVis);
   // the wake: step the vortex simulation, then let it blow over the ground field
   vortex.update(dt, flight, t, fx.env.wind);
@@ -288,10 +296,16 @@ function advance(dt, ctl) {
     game.fov = r[5] || 60;
   }
   fx.update(dt, t, flight, camera, rider.sunVis, pipeline.size, pipeline.reversed);
-  // trails off the two edges of the bristle head
-  rider.group.updateMatrixWorld(true);
-  _bl.set(-0.17, -0.02, 1.16).applyMatrix4(rider.group.matrixWorld);
-  _br.set(0.17, -0.02, 1.16).applyMatrix4(rider.group.matrixWorld);
+  // slipstream trails: off the broom's bristle head, or off the catbus's rear roof-rail posts
+  if (game.catbus && game.catbus.mounted) {
+    game.catbus.group.updateMatrixWorld(true);
+    _bl.set(-0.46, 2.55, 1.48).applyMatrix4(game.catbus.group.matrixWorld);
+    _br.set(0.46, 2.55, 1.48).applyMatrix4(game.catbus.group.matrixWorld);
+  } else {
+    rider.group.updateMatrixWorld(true);
+    _bl.set(-0.17, -0.02, 1.16).applyMatrix4(rider.group.matrixWorld);
+    _br.set(0.17, -0.02, 1.16).applyMatrix4(rider.group.matrixWorld);
+  }
   const trail = THREE.MathUtils.clamp((flight.speed - 34) / 26, 0, 1) * 0.42 + flight.boosting * 0.5;
   fx.updateRibbons(dt, _bl, _br, camera.position, trail);
   game.river.update(dt, fx.sprites, camera.position, fx.sunTint(rider.sunVis));
@@ -340,7 +354,12 @@ function render(dt) {
   if (!pipeline.sceneRT) { resize(); if (!pipeline.sceneRT) return; }
   camera.updateMatrixWorld();
   U.uCamPos.value.copy(camera.position);
-  game.rider.renderShadow(pipeline.reversed);
+  if (game.catbus && game.catbus.mounted) {
+    const cb = game.catbus;
+    game.rider.renderShadow(pipeline.reversed, cb.group, 4.8, () => cb.rig.setShadowMode(true), () => cb.rig.setShadowMode(false));
+  } else {
+    game.rider.renderShadow(pipeline.reversed);
+  }
   game.water.renderReflection(camera, pipeline.size);
   game.terrain.select(game.terrain.mainView, camera);
   game.meadow.update(camera);
@@ -445,16 +464,33 @@ game.view = (x, y, z, yaw = 0, pitch = 0) => {
   return [x, y, z];
 };
 game.viewAGL = (x, agl, z, yaw = 0, pitch = 0) => game.view(x, Math.max(game.terrain.heightAt(x, z), 0) + agl, z, yaw, pitch);
-/** Put the rider somewhere and let the chase camera follow again. */
+/** Put the rider (or mounted catbus) somewhere and let the chase camera follow again. */
 game.fly = (x, z, agl = 6, yawDeg = 0, speed = SPEEDS.CRUISE, pitchDeg = 0) => {
   game.freeCam = false;
   game.wake.reset();
   game.vortex.reset();
   for (const r of game.fx.ribbons) r.reset();
   const f = game.flight;
-  f.place(x, z, agl, yawDeg);
-  f.speed = speed;
-  f.pitch = (pitchDeg * Math.PI) / 180;
+  const cb = game.catbus;
+  if (cb && cb.mounted) {
+    const surf = f.coverAt(x, z, 0);
+    cb.pos.set(x, surf + agl, z);
+    cb.yaw = (yawDeg * Math.PI) / 180;
+    cb.pitch = (pitchDeg * Math.PI) / 180;
+    cb.roll = 0;
+    cb.airSpeed = speed;
+    cb.state = agl > 0.5 ? 'fly' : 'ground';
+    cb.groundSpeed = agl > 0.5 ? 0 : speed;
+    if (cb.state === 'fly') cb._enterFlyAnim(0.05); else cb._returnToGroundAnims(0.05);
+    cb._updateFwd();
+    cb.vel.copy(cb.fwd).multiplyScalar(speed);
+    cb._syncToFlight(1 / 60, game.time, f);
+    f._dir();
+  } else {
+    f.place(x, z, agl, yawDeg);
+    f.speed = speed;
+    f.pitch = (pitchDeg * Math.PI) / 180;
+  }
   game.chase.snap();
   pipeline.hasPrev = false;
 };

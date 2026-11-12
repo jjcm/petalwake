@@ -1,77 +1,46 @@
-// Coming in to land on a pad, getting off the broom, waiting there, getting back on and leaving.
-// While any of that is going on this flies the broom (flight.auto), poses the rider (rider.seat,
-// rider.off) and has the camera circle her (chase.circle).
+// Smooth, snappy witch landing and takeoff — on designated tower pads, rooftops, and open ground.
 //
-//   approach  the planned way in (approach.js): reined in to a canter, bled off to a walk, flared
-//   settle    the last hand's breadth down
-//   dismount  a hop off the broom: crouch, spring, a puff of dust at the top of it (which is where
-//             the seated model gives way to the standing one), a turn in the air to face the view,
-//             boots down on the mark with a squash
-//   landed    she stands there for as long as you like
-//   mount     the hop back on
-//   launch    off the edge the way she was facing, a dip to pick up speed, and the broom is yours
-//
-// A pad says which way to come in and which way she faces. Both are checked against what really
-// stands round it (way()): if a neighbour blocks the line, the nearest clear heading is flown
-// instead, and a pad with no way in at all is left alone.
-//
-// Pads are small and often have a wall at the back (a gallery round a tower). A broom is longer
-// than such a pad is deep, so it stops short - `hover`, nose just off the wall - and she hops the
-// rest of the way on to the mark (`spot`); it waits for her at `away`, tail just off the wall,
-// facing out. On an open pad all three are the middle of it.
-//
-// The standing rider is a model of its own (rider.standing, from rider_stand.glb). Until there is
-// one she stays on the broom and sets it down on its bristles, nose in the air.
+// No circling or approach circuit: from wherever the broom is flying, it flares directly toward
+// the landing mark, transitions smoothly in mid-air from the flying pose to the standing landing
+// pose, touches down cleanly on the surface, and settles with a crisp cushioned compression.
 import * as THREE from 'three';
-import { planApproach, APPROACH } from './approach.js';
+import { APPROACH } from './approach.js';
 import { SPEEDS } from '../player/flight.js';
+import { hasClearGlide } from './surface.js';
 import { puff, dustRing, twinkle, PALE } from './sparks.js';
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const damp = (cur, target, rate, dt) => cur + (target - cur) * (1 - Math.exp(-rate * dt));
 const lerp = (a, b, t) => a + (b - a) * t;
-const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);          // 0..1 across [a, b]
+const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
 const smooth = (t) => t * t * (3 - 2 * t);
 const easeOut = (t) => 1 - (1 - t) * (1 - t);
 const easeIn = (t) => t * t;
-const ring = (t, w, z) => (t < 0 ? 0 : Math.exp(-z * t) * Math.cos(w * t));   // a damped wobble, 1 at t = 0
-const turn = (a) => Math.atan2(Math.sin(a), Math.cos(a));         // an angle brought into -pi..pi
+const turn = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 export const LAND = {
-  RANGE: 60,        // m: a pad this close can be landed on
-  V_APP: 12,        // m/s held on the way round to the final
-  V_WALK: 1.5,      // m/s over the last of the way
-  BLEED: 0.62,      // 1/s: how the speed runs off with the distance left (v = V_WALK + BLEED * left)
-  BRAKE: 1.9,       // 1/s: how hard the broom is reined in when the landing begins
-  BANK: 0.6,        // rad: the most it leans into the turns on the way round
-  FLARE: 0.30,      // rad: nose-up as it arrives
-  FLARE_D: 7,       // m from the end at which the flare begins
-  PIVOT_D: 2.4,     // m from the end at which the broom starts to square up to the view (no standing model)
-  CAM_D: 6,         // m from the end at which the camera starts to come round
-  CAM_OUT: 6,       // m out from the pad, leaving, at which it falls in behind her again
-  NOSE: 1.5,        // m: room the broom needs ahead of its middle (handle and lantern, and a little)
-  TAIL: 1.45,       // m: ...and behind it (the bristles)
-  WALL: 0.9,        // m above a pad's floor: anything taller beside it is a wall, not a kerb
-  SIT: 0.44,        // rad: nose-up of the broom once it is set down (when there is no standing model)
-  T_OFF: 1.2,       // s: the dismount
-  T_SWAP: 0.46,     // s into it: the top of the hop, where the models change places
-  T_TOUCH: 0.78,    // s into it: boots on the floor
-  T_ON: 0.62,       // s: the hop back on, up to the moment the broom moves off
-  T_LAUNCH: 1.7,    // s: from moving off to handing the broom back at a cruise
-  IN_SLOPE: 0.8,    // a way in is open if a descent no steeper than this clears what stands along it...
-  OUT_SLOPE: 0.5,   // ...and a way out if a climb no steeper than this does
-  ORBIT: { dist: 6.6, height: 1.9, spin: 0.085, fov: 56 },
+  RANGE: 26,        // m: proximity within which a designated pad lights up as the landing zone
+  NOSE: 1.45,       // m: broom clearance ahead of centre near a wall
+  TAIL: 1.45,       // m: broom clearance behind centre near a wall
+  WALL: 0.9,        // m above floor: taller than this beside a pad counts as a wall
+  SIT: 0.44,        // rad: resting nose-up angle if no standing model is loaded
+  FLARE: 0.40,      // rad: aerodynamic braking flare pitch before mid-air dismount
+  U_SWAP: 0.45,     // fraction through descent where flying pose transitions in mid-air to landing pose
+  T_SETTLE: 0.26,   // s: crisp post-touchdown knee compression & recovery
+  T_MOUNT: 0.28,    // s: quick hop back onto the broom
+  T_LAUNCH: 0.56,   // s: brisk push-off into player flight
+  IN_SLOPE: 0.8,
+  OUT_SLOPE: 0.5,
+  ORBIT: { dist: 6.4, height: 1.85, spin: 0.085, fov: 56 },
 };
 
-const _o = { x: 0, y: 0, z: 0, yaw: 0, k: 0, slope: 0 };
-// headings tried, as offsets from the pad's own, when something stands in the way it gives
 const SWEEP = [0, 25, -25, 50, -50, 75, -75, 105, -105, 135, -135, 165, -165, 180].map((d) => (d * Math.PI) / 180);
 
 export class Landing {
   /**
    * @param game  the game object (flight, rider, chase, fx, sound, terrain)
-   * @param on    { touch(pad), leave(pad), broke() } - boots on the pad; moving off it; landing broken off
+   * @param on    { touch(pad), leave(pad), broke() }
    */
   constructor(game, on = {}) {
     this.game = game;
@@ -79,54 +48,56 @@ export class Landing {
     this.state = 'fly';
     this.pad = null;
     this.t = 0;
-    this.path = null;
-    this.s = 0;                 // metres along the path, and the speed along it
-    this.v = 0;
+    this.dur = 0.75;
     this.yaw = 0; this.pitch = 0; this.roll = 0;
-    this.piv = { on: false, t: 0, T: 1, from: 0, d: 0 };
-    this.hover = new THREE.Vector3();   // where the broom stops (its middle, at hover height)
-    this.spot = new THREE.Vector3();    // where she stands: over the middle of the pad
-    this.away = new THREE.Vector3();    // where the broom waits for her to get back on
-    this.focus = new THREE.Vector3();   // what the camera circles
-    this.rest = APPROACH.HOVER;         // height of flight.pos over the pad's floor once she is off / has set the broom down
-    this.since = 1e9;                   // seconds since she got back on (the broom is still bobbing under her)
+    this.startPos = new THREE.Vector3();
+    this.tanXZ = new THREE.Vector2();
+    this.startVy = 0;
+    this.startYaw = 0;
+    this.landYaw = 0;
+    this.arcLift = 0;
+    this.spot = new THREE.Vector3();
+    this.away = new THREE.Vector3();
+    this.focus = new THREE.Vector3();
+    this.rest = APPROACH.HOVER;
+    this.since = 1e9;
+    this.settleT = 1e9;
     this.cam = false;
-    this.stand = false;                 // is there a standing model to change to (else the broom is set down)
-    this.spin = false;                  // does she turn to face the view in the hop (else the broom turns first)
+    this.stand = false;
     this.fired = {};
     this.dep = null;
-    this.out = 0;                       // the heading she leaves on
-    this._ways = new WeakMap();         // pad -> the ways on and off it that are open (see way())
+    this.out = 0;
+    this.path = { len: 0, final: 0, lift: 0, bad: 0 };
+    this._ways = new WeakMap();
     this.script = { step: (dt, time, f) => this._step(dt, time, f), quiet: false };
   }
 
   get busy() { return this.state !== 'fly'; }
   get landed() { return this.state === 'landed'; }
 
-  /** Top of the land, the water or a building at (x, z), as far as landing on `pad` goes. */
+  /** Top of land, water, or building at (x, z), respecting a designated pad's true floor. */
   _floor(pad, x, z) {
     const g = this.game, f = g.flight;
     let h = Math.max(g.terrain.heightAt(x, z), 0);
     if (f.river) { const r = f.river.levelAt(x, z); if (r > h) h = r; }
     if (f.solid) {
-      // (on the pad itself its own floor is the truth: the grid of roof heights is too coarse to
-      // tell a mark painted at the foot of a wall from the wall)
-      if (pad && (x - pad.pos.x) ** 2 + (z - pad.pos.z) ** 2 < (pad.radius + 0.6) ** 2) h = Math.max(h, pad.pos.y);
-      else { const s = f.solid.heightAt(x, z); if (s > h) h = s; }
+      if (pad && !pad.adhoc && (x - pad.pos.x) ** 2 + (z - pad.pos.z) ** 2 < (pad.radius + 0.6) ** 2) {
+        h = Math.max(h, pad.pos.y);
+      } else {
+        const s = f.solid.heightAt(x, z);
+        if (s > h) h = s;
+      }
     }
     return h;
   }
 
   floorAt(x, z) { return this._floor(this.pad, x, z); }
 
-  /**
-   * The ways on to and off a pad that are really open, going by what stands round it: the pad's
-   * own approach and facing where nothing is in them, else the nearest headings that are clear
-   * (a neighbour may have been built across the line since the pad was laid out).
-   * @returns { approach, short, depart, back, own } - headings, how far the broom stands off the
-   *          middle of the pad on each, and whether both are the pad's own - or null: no way in.
-   */
+  /** Open approach and departure headings for a designated pad. */
   way(pad) {
+    if (pad.adhoc) {
+      return { approach: pad.yaw, short: 0, depart: pad.yaw, back: 0, own: true };
+    }
     if (this._ways.has(pad)) return this._ways.get(pad);
     let w = null;
     const inn = this._firstClear(pad.approach, (a) => this._clearIn(pad, a));
@@ -136,7 +107,6 @@ export class Landing {
     return w;
   }
 
-  /** The buildings have changed: what was open may not be. */
   forget() { this._ways = new WeakMap(); }
 
   _firstClear(a0, test) {
@@ -144,7 +114,6 @@ export class Landing {
     return null;
   }
 
-  /** Can the broom come down on to `pad` flying heading a? @returns how far short it stops, or -1. */
   _clearIn(pad, a) {
     const A = APPROACH, L = LAND;
     const short = this._standoff(pad, a, L.NOSE);
@@ -157,7 +126,6 @@ export class Landing {
     return short;
   }
 
-  /** Can it leave `pad` on heading a? @returns how far out from the middle it waits for her, or -1. */
   _clearOut(pad, a) {
     const A = APPROACH, L = LAND;
     const back = this._standoff(pad, a + Math.PI, L.TAIL);
@@ -170,10 +138,6 @@ export class Landing {
     return back;
   }
 
-  /**
-   * How far from the middle of a pad the broom's own middle has to stay for `reach` metres of it
-   * to fit in front of a wall that stands along `dir` (a heading) from there. 0 on an open pad.
-   */
   _standoff(pad, dir, reach) {
     const S = this.game.flight.solid;
     if (!S) return 0;
@@ -184,10 +148,6 @@ export class Landing {
     return 0;
   }
 
-  /**
-   * Which way round a pad a camera `dist` out and `height` up can see her: null if every way,
-   * else { mid, half } - the middle of the widest open stretch (a bearing) and half its width.
-   */
   _openArc(pad, dist, height) {
     const S = this.game.flight.solid, T = this.game.terrain;
     if (!S) return null;
@@ -206,12 +166,12 @@ export class Landing {
     if (all) return null;
     let best = 0, at = 0;
     for (let k = 0; k < N; k++) {
-      if (!open[k] || open[(k + N - 1) % N]) continue;      // k starts a run
+      if (!open[k] || open[(k + N - 1) % N]) continue;
       let n = 0;
       while (n < N && open[(k + n) % N]) n++;
       if (n > best) { best = n; at = k; }
     }
-    if (best < 3) return { mid: pad.yaw, half: 0.2 };       // hemmed in: stay out in front of her
+    if (best < 3) return { mid: pad.yaw, half: 0.2 };
     const step = TAU / N;
     return { mid: (at + (best - 1) / 2) * step, half: Math.max(0.2, ((best - 1) / 2) * step - 0.26) };
   }
@@ -219,90 +179,179 @@ export class Landing {
   _set(state) { this.state = state; this.t = 0; this.fired = {}; }
   _once(key) { if (this.fired[key]) return false; this.fired[key] = true; return true; }
 
-  /** Start a landing on `pad` from wherever the broom is. @returns false if there is no way in. */
-  begin(pad) {
+  /**
+   * Begin a direct, smooth, snappy landing onto `pad` (either a designated tower pad or an
+   * ad-hoc ground/roof surface). No approach pattern or circling.
+   */
+  begin(pad, opts = {}) {
     if (this.busy) return false;
     const w = this.way(pad);
     if (!w) return false;
-    const f = this.game.flight, A = APPROACH, L = LAND;
+    const g = this.game, f = g.flight, A = APPROACH, L = LAND;
+
+    // Unless forced by debug hook, ensure a tower wall isn't standing taller than both ends between us
+    if (!opts.force && !pad.adhoc && !hasClearGlide(g, f.pos.x, f.pos.y + 1.2, f.pos.z, pad.pos.x, pad.pos.y + 1.0, pad.pos.z, 0.9)) {
+      // Allow hopping up over a parapet lip when close to the pad
+      const hd = Math.hypot(pad.pos.x - f.pos.x, pad.pos.z - f.pos.z);
+      if (hd > 18 || f.pos.y < pad.pos.y - 6) return false;
+    }
+
     this.pad = pad;
-    this.stand = !!this.game.rider.standing;      // (decided once: the model may arrive while she is on her way in)
-    this.out = w.depart;
-    const ax = Math.sin(w.approach), az = -Math.cos(w.approach);
-    // She turns to face the view in the air, as she hops off. (Without a standing model the broom
-    // turns under her first, hovering - unless it is stood off from a wall, where there is no
-    // room to swing it: then broom and all go round in the hop.)
-    this.spin = this.stand || w.short > 0.05;
-    this.spot.set(pad.pos.x, pad.pos.y + A.HOVER, pad.pos.z);
-    this.hover.set(pad.pos.x - ax * w.short, pad.pos.y + A.HOVER, pad.pos.z - az * w.short);
-    this.away.set(pad.pos.x + Math.sin(w.depart) * w.back, pad.pos.y + A.HOVER, pad.pos.z - Math.cos(w.depart) * w.back);
-    this.focus.set(pad.pos.x, pad.pos.y + 1.15, pad.pos.z);
-    const hs = Math.hypot(f.vel.x, f.vel.z);
-    const path = planApproach(
-      { x: f.pos.x, y: f.pos.y, z: f.pos.z, yaw: f.yaw, slope: Math.tan(clamp(f.pitch, -0.6, 0.6)), speed: hs, run: Math.max(0, hs - L.V_APP) / L.BRAKE },
-      { x: this.hover.x, y: this.hover.y + A.SETTLE, z: this.hover.z, approach: w.approach },
-      (x, z) => this.floorAt(x, z),
+    this.stand = !!g.rider.standing;
+    this.rest = this.stand ? A.HOVER : Math.max(g.rider.restHeight(L.SIT) - 0.02, 0.3);
+    this.out = pad.adhoc ? f.yaw : w.depart;
+    this.landYaw = pad.adhoc ? f.yaw : pad.yaw;
+
+    this.spot.set(pad.pos.x, pad.pos.y, pad.pos.z);
+    this.away.set(
+      pad.pos.x + Math.sin(this.out) * w.back,
+      pad.pos.y + A.HOVER,
+      pad.pos.z - Math.cos(this.out) * w.back,
     );
-    if (!path) { this.pad = null; return false; }
-    this.path = path;
-    this.s = 0; this.v = Math.max(hs, 4);
-    this.yaw = f.yaw; this.pitch = f.pitch; this.roll = f.roll;
-    this.piv.on = false;
+    this.focus.set(pad.pos.x, pad.pos.y + 1.15, pad.pos.z);
+
+    this.startPos.copy(f.pos);
+    this.startYaw = f.yaw;
+    this.yaw = f.yaw;
+    this.pitch = f.pitch;
+    this.roll = f.roll;
+
+    const dx = this.spot.x - f.pos.x;
+    const dz = this.spot.z - f.pos.z;
+    const horizDist = Math.hypot(dx, dz);
+    const vertDist = Math.abs((pad.pos.y + this.rest) - f.pos.y);
+    const totalDist = Math.hypot(horizDist, vertDist);
+
+    // Snappy direct duration: ~0.52s when skimming close, up to ~1.12s from medium range
+    this.dur = clamp(0.46 + totalDist * 0.029, 0.50, 1.15);
+
+    // Initial horizontal Hermite tangent preserves velocity direction without overshooting the mark
+    const hs = Math.hypot(f.vel.x, f.vel.z);
+    const along = horizDist > 0.2 ? (f.vel.x * dx + f.vel.z * dz) / horizDist : hs;
+    const tanMag = clamp(Math.max(0, along) * this.dur * 0.55, 0, Math.min(horizDist * 1.15, 12));
+    if (hs > 0.5 && tanMag > 0.05) {
+      // Blend initial velocity direction slightly toward target so off-axis taps curve cleanly straight in
+      const vx = f.vel.x / hs, vz = f.vel.z / hs;
+      const tx = horizDist > 0.2 ? dx / horizDist : vx;
+      const tz = horizDist > 0.2 ? dz / horizDist : vz;
+      const mx = vx * 0.55 + tx * 0.45, mz = vz * 0.55 + tz * 0.45;
+      const ml = Math.hypot(mx, mz) || 1;
+      this.tanXZ.set((mx / ml) * tanMag, (mz / ml) * tanMag);
+    } else {
+      this.tanXZ.set(0, 0);
+    }
+    this.startVy = clamp(f.vel.y, -14, 10);
+
+    // Compute minimal arc clearance over any intervening parapet/roof edge along the straight chord
+    let maxObs = -1e9;
+    const samples = Math.max(4, Math.min(24, Math.ceil(horizDist / 0.9)));
+    for (let i = 1; i < samples; i++) {
+      const u = i / samples;
+      const sx = f.pos.x + dx * u, sz = f.pos.z + dz * u;
+      const fl = this._floor(pad, sx, sz) + 0.78;
+      const lineY = lerp(f.pos.y, pad.pos.y + this.rest, u);
+      if (fl - lineY > maxObs) maxObs = fl - lineY;
+    }
+    this.arcLift = clamp(Math.max(0.28, maxObs), 0.28, 4.5);
+
+    this.path = { len: horizDist, final: horizDist, lift: this.arcLift, bad: 0 };
     this.cam = false;
     this.since = 1e9;
+    this.settleT = 1e9;
     this.script.quiet = false;
-    this._boost = true;                       // (a boost already held does not count as breaking off)
+    this._boost = !!(g.input && g.input.boost);
     f.auto = this.script;
-    this._set('approach');
-    this.game.sound?.whoosh?.(0.35);
+    this._set('descent');
+    g.sound?.whoosh?.(0.45);
     return true;
   }
 
-  /** Get back on and go. */
+  /** Place the witch directly in the landed state at (x, y, z) (used e.g. when dismounting the catbus). */
+  placeLanded(x, y, z, yaw = 0, kind = 'ground') {
+    const g = this.game, f = g.flight;
+    this.stand = !!g.rider.standing;
+    this.rest = this.stand ? APPROACH.HOVER : Math.max(g.rider.restHeight(LAND.SIT) - 0.02, 0.3);
+    this.pad = {
+      id: null, name: null, adhoc: true, kind,
+      pos: new THREE.Vector3(x, y, z), radius: 1.4, yaw, approach: yaw,
+    };
+    this.spot.set(x, y, z);
+    this.away.set(x, y + APPROACH.HOVER, z);
+    this.focus.set(x, y + 1.15, z);
+    this.out = yaw;
+    this.landYaw = yaw;
+    this.yaw = yaw; this.pitch = this.stand ? 0 : LAND.SIT; this.roll = 0;
+    f.pos.set(x, y + this.rest, z);
+    f.vel.set(0, 0, 0);
+    f.speed = 0;
+    f.yaw = yaw; f.pitch = this.pitch; f.roll = 0;
+    this.script.quiet = true;
+    f.auto = this.script;
+    this.settleT = 0;
+    this.since = 1e9;
+    this.cam = true;
+    g.chase.circle(this.focus, {
+      ...LAND.ORBIT, seconds: 0.9, skip: 1.8,
+      arc: this._openArc(this.pad, LAND.ORBIT.dist + 0.6, LAND.ORBIT.height + 0.4),
+    });
+    this._set('landed');
+    this._pose();
+  }
+
+  /** Hop back on the broom and launch. */
   takeoff() {
     if (this.state !== 'landed') return false;
+    // On open ground/roofs, let the player take off toward where the camera is looking if desired,
+    // or along her current facing
+    if (this.pad && this.pad.adhoc) {
+      const w = this._firstClear(this.yaw, (a) => this._clearOut(this.pad, a));
+      this.out = w ? w.a : this.yaw;
+    }
     this._set('mount');
     return true;
   }
 
-  /** Let go of the broom wherever it is (a landing broken off, or the rider moved from outside). */
+  /** Release control of the broom immediately. */
   abort() {
     const g = this.game, f = g.flight, r = g.rider;
     if (f.auto === this.script) {
       f.auto = null;
       f.speed = Math.max(f.speed, SPEEDS.VMIN);
-      if (this.state !== 'approach') { f.pitch = 0; f.roll = 0; }
+      if (this.state !== 'descent') { f.pitch = 0; f.roll = 0; }
     }
     r.seat.hop = 0; r.seat.sy = 1; r.seat.calm = 0;
     r.off.on = false; r.off.y = 0; r.off.sy = 1;
-    if (this.cam) g.chase.release(0.6);
+    if (this.cam) g.chase.release(0.55);
     this.cam = false;
-    this.pad = null; this.path = null; this.dep = null;
+    this.pad = null; this.dep = null;
     this.since = 1e9;
+    this.settleT = 1e9;
     this._set('fly');
   }
 
-  /** Once a step, before the flight model: notice the broom being taken away, a landing broken off. */
   update(dt, ctl) {
     if (!this.busy) return;
     const f = this.game.flight;
-    if (f.auto !== this.script) { this.abort(); return; }       // placed elsewhere by something else
-    if (this.state === 'approach') {
-      // a fresh touch of the gust breaks the landing off (not in the last few metres)
+    if (f.auto !== this.script) { this.abort(); return; }
+    if (this.state === 'descent') {
+      // Pressing boost early in descent cancels the landing cleanly back into flight
       const boost = !!(ctl && ctl.boost);
-      if (boost && !this._boost && this.t > 0.25 && this.path.len - this.s > 7) { this.abort(); this.on.broke?.(); return; }
+      if (boost && !this._boost && this.t < this.dur * LAND.U_SWAP) {
+        this.abort();
+        this.on.broke?.();
+        return;
+      }
       this._boost = boost;
     }
   }
 
-  // ------------------------------------------------------------------------------- the script
+  // ------------------------------------------------------------------------------- script steps
   _step(dt, time, f) {
     this.t += dt;
     this.since += dt;
+    if (this.state === 'landed') this.settleT += dt;
     switch (this.state) {
-      case 'approach': this._approach(dt, f); break;
-      case 'settle': this._settle(dt, f); break;
-      case 'dismount': this._dismount(dt, f); break;
+      case 'descent': this._descent(dt, f); break;
       case 'landed': this._wait(dt, f); break;
       case 'mount': this._mount(dt, f); break;
       case 'launch': this._launch(dt, f); break;
@@ -318,223 +367,229 @@ export class Landing {
     f.speed = f.vel.length();
   }
 
-  _approach(dt, f) {
-    const P = this.path, L = LAND, g = this.game;
-    let left = P.len - this.s;
-    // rein in to the approach speed, then let it run off to a walk over the last of the way
-    const want = Math.min(L.V_APP, L.V_WALK + left * L.BLEED);
-    this.v += (want - this.v) * (1 - Math.exp(-(this.v > want ? L.BRAKE : 1.3) * dt));
-    this.s = Math.min(P.len, this.s + this.v * dt);
-    left = P.len - this.s;
-    const o = P.at(this.s, _o);
-    // (the plan was laid over a metre-by-metre sounding of what is underneath: never under the real thing)
-    const y = Math.max(o.y, this.floorAt(o.x, o.z) + 0.72);
-    this._move(f, o.x, y, o.z, dt);
+  _descent(dt, f) {
+    const L = LAND, g = this.game, pad = this.pad;
+    const u = clamp(this.t / this.dur, 0, 1);
 
-    // heading: along the path. With no standing model to turn in the air, the broom itself squares
-    // up to the view as it drifts in
-    const prev = this.yaw;
-    if (!this.spin && !this.piv.on && left < L.PIVOT_D) this._pivot(o.yaw);
-    this.yaw = this.piv.on ? this._pivoted(dt) : o.yaw;
-    const rate = turn(this.yaw - prev) / Math.max(dt, 1e-4);
-    // nose along the path, coming up into a flare as the speed comes off
-    const flare = 1 - smooth(seg(left, 1.2, L.FLARE_D));
-    this.pitch = damp(this.pitch, Math.atan(o.slope) * (1 - flare) + L.FLARE * flare, 6, dt);
-    this.roll = damp(this.roll, clamp(rate / 1.4, -1, 1) * L.BANK * clamp(this.v / 9, 0.3, 1), 4.6, dt);
+    // Cubic Hermite horizontal curve: smooth deceleration straight to the landing mark, zero circling
+    const u2 = u * u, u3 = u2 * u;
+    const h00 = 2 * u3 - 3 * u2 + 1;
+    const h10 = u3 - 2 * u2 + u;
+    const h01 = -2 * u3 + 3 * u2;
+    const x = h00 * this.startPos.x + h10 * this.tanXZ.x + h01 * this.spot.x;
+    const z = h00 * this.startPos.z + h10 * this.tanXZ.y + h01 * this.spot.z;
+
+    // Vertical curve: clean flare-and-settle onto pad.pos.y + this.rest, clearing any lip
+    const endY = pad.pos.y + this.rest;
+    const baseY = lerp(this.startPos.y, endY, smooth(u));
+    const velArc = this.startVy * this.dur * 0.22 * u * (1 - u) * (1 - u);
+    const clearArc = Math.sin(u * Math.PI) * this.arcLift * (1 - 0.35 * u);
+    const minFloor = this._floor(pad, x, z) + lerp(0.72, this.rest - 0.02, smooth(seg(u, 0.55, 1.0)));
+    const y = Math.max(baseY + velArc + clearArc, minFloor);
+
+    this._move(f, x, y, z, dt);
+
+    // Heading: track travel vector initially, then smoothly align to landYaw through the mid-air swap
+    const travelSpeed = Math.hypot(f.vel.x, f.vel.z);
+    const travelYaw = travelSpeed > 1.2 ? Math.atan2(f.vel.x, -f.vel.z) : this.yaw;
+    const alignK = smooth(seg(u, 0.22, 0.92));
+    const baseYaw = this.startYaw + turn(travelYaw - this.startYaw) * smooth(seg(u, 0, 0.35));
+    this.yaw = baseYaw + turn(this.landYaw - baseYaw) * alignK;
+
+    // Pitch: crisp braking flare before U_SWAP, then level (for standing model) or resting tilt
+    const stand = this.stand && !!g.rider.standing;
+    if (u < L.U_SWAP) {
+      const fk = smooth(u / L.U_SWAP);
+      this.pitch = damp(this.pitch, L.FLARE * fk, 12, dt);
+    } else {
+      const targetPitch = stand ? 0 : L.SIT;
+      this.pitch = damp(this.pitch, targetPitch, 11, dt);
+    }
+    this.roll = damp(this.roll, 0, 10, dt);
     f.yaw = this.yaw; f.pitch = this.pitch; f.roll = this.roll;
 
-    this.script.quiet = left < 4;
-    if (!this.cam && left < L.CAM_D) {
+    this.script.quiet = u > 0.55;
+
+    // Start blending the landed camera in smoothly during the second half of the descent
+    if (!this.cam && u > 0.38) {
       this.cam = true;
-      g.chase.circle(this.focus, { ...L.ORBIT, seconds: 1.8, skip: this.pad.radius + 1.0, arc: this._openArc(this.pad, L.ORBIT.dist + 0.8, L.ORBIT.height + 0.5) });
+      g.chase.circle(this.focus, {
+        ...L.ORBIT,
+        seconds: 1.05,
+        skip: Math.max(pad.radius + 0.9, 1.8),
+        arc: this._openArc(pad, L.ORBIT.dist + 0.8, L.ORBIT.height + 0.5),
+      });
     }
-    if (left <= 1e-3) this._set('settle');
-  }
 
-  _pivot(from) {
-    const p = this.piv, d = turn(this.pad.yaw - from);
-    p.on = true; p.t = 0; p.from = from; p.d = d; p.T = 0.4 + 0.5 * Math.abs(d);
-  }
-
-  _pivoted(dt) {
-    const p = this.piv;
-    p.t += dt;
-    const u = clamp(p.t / p.T, 0, 1);
-    return p.from + p.d * u * u * u * (u * (u * 6 - 15) + 10);
-  }
-
-  _settle(dt, f) {
-    const H = this.hover, g = this.game;
-    const k = 1 - Math.exp(-dt * 6), ky = 1 - Math.exp(-dt * 5);
-    this._move(f, f.pos.x + (H.x - f.pos.x) * k, f.pos.y + (H.y - f.pos.y) * ky, f.pos.z + (H.z - f.pos.z) * k, dt);
-    const prev = this.yaw;
-    let turned = true;
-    if (!this.spin) {
-      if (!this.piv.on) this._pivot(this.yaw);
-      this.yaw = this._pivoted(dt);
-      turned = this.piv.t >= this.piv.T;
+    // Mid-air transition from flying pose to landing pose!
+    if (u >= L.U_SWAP && this._once('swap')) {
+      const sun = g.fx.sunTint(g.rider.sunVis);
+      puff(g.fx, f.pos.x, f.pos.y + 0.25, f.pos.z, stand ? 12 : 8, sun, 0.42, 1.5);
+      twinkle(g.fx, f.pos.x, f.pos.y + 0.3, f.pos.z, 8, PALE, 2.2, f.vel.x * 0.25, 0.4, f.vel.z * 0.25, 0.65);
+      g.sound?.whoosh?.(0.28);
     }
-    const rate = turn(this.yaw - prev) / Math.max(dt, 1e-4);
-    this.pitch = damp(this.pitch, 0, 4.5, dt);
-    this.roll = damp(this.roll, clamp(rate / 2.6, -1, 1) * 0.3, 5, dt);
-    f.yaw = this.yaw; f.pitch = this.pitch; f.roll = this.roll;
-    this.script.quiet = true;
-    const done = turned && this.t > 0.4 && Math.hypot(H.x - f.pos.x, H.y - f.pos.y, H.z - f.pos.z) < 0.04 && Math.abs(this.pitch) < 0.03;
-    if (done || this.t > 4) {
-      // where flight.pos ends up: at hover height over the mark (she is standing under it), or -
-      // no standing model - as low as the broom sits when it is set down nose-up
-      this.rest = this.stand ? APPROACH.HOVER : Math.max(g.rider.restHeight(LAND.SIT) - 0.02, 0.3);
-      this.from = this.yaw;
-      this._set('dismount');
-    }
-  }
 
-  _dismount(dt, f) {
-    const L = LAND, g = this.game, pad = this.pad, t = this.t, H = this.hover, S = this.spot;
-    const stand = this.stand;
-    // from the broom's place to hers: with the hop (and, on her own feet, only once she has left the broom)
-    const go = smooth(seg(t, stand ? L.T_SWAP - 0.04 : 0.2, L.T_TOUCH - 0.02));
-    const down = stand ? 0 : smooth(seg(t, 0.36, L.T_TOUCH));
-    this._move(f, lerp(H.x, S.x, go), pad.pos.y + lerp(APPROACH.HOVER, this.rest, down), lerp(H.z, S.z, go), dt);
-    // she turns in the air to come down facing the view
-    if (this.spin) this.yaw = this.from + turn(pad.yaw - this.from) * (stand ? easeOut(seg(t, L.T_SWAP - 0.04, L.T_TOUCH - 0.04)) : smooth(seg(t, 0.2, L.T_TOUCH - 0.04)));
-    else this.yaw = pad.yaw;
-    this.pitch = stand ? damp(this.pitch, 0, 6, dt) : L.SIT * smooth(seg(t, 0.2, L.T_TOUCH - 0.02));
-    this.roll = damp(this.roll, 0, 6, dt);
-    f.yaw = this.yaw; f.pitch = this.pitch; f.roll = this.roll;
+    // Clean touchdown!
+    if (u >= 1) {
+      this._move(f, this.spot.x, endY, this.spot.z, dt);
+      f.vel.set(0, 0, 0);
+      f.speed = 0;
+      f.yaw = this.yaw = this.landYaw;
+      f.pitch = this.pitch = stand ? 0 : L.SIT;
+      f.roll = this.roll = 0;
+      this.script.quiet = true;
+      this.settleT = 0;
 
-    const sun = g.fx.sunTint(g.rider.sunVis);
-    if (t >= L.T_SWAP - 0.06 && this._once('puff')) {
-      // the top of the hop: a ball of dust and a few petals, and she is on her feet behind it
-      puff(g.fx, H.x, pad.pos.y + 1.3, H.z, stand ? 17 : 10, sun, 0.5, 1.7);
-      twinkle(g.fx, H.x, pad.pos.y + 1.35, H.z, 10, PALE, 2.4, 0, 0.5, 0, 0.7);
-      g.fx.burst(H.x, pad.pos.y + 1.25, H.z, 9, 0.2, 0.3 + 0.7 * g.rider.sunVis, 2.4);
-      g.sound?.whoosh?.(0.3);
-    }
-    if (t >= L.T_TOUCH && this._once('touch')) {
-      dustRing(g.fx, S.x, pad.pos.y, S.z, 0.3, 18, sun);
-      g.sound?.thump?.(0.7);
+      const sun = g.fx.sunTint(g.rider.sunVis);
+      dustRing(g.fx, this.spot.x, pad.pos.y, this.spot.z, 0.32, 16, sun);
+      if (pad.kind !== 'roof' && pad.adhoc) {
+        g.fx.burst(this.spot.x, pad.pos.y + 0.5, this.spot.z, 8, 0.2, 0.3 + 0.7 * g.rider.sunVis, 2.2);
+      }
+      g.sound?.thump?.(0.65);
       this.on.touch?.(pad);
+      this._set('landed');
     }
-    if (t >= L.T_OFF) this._set('landed');
   }
 
   _wait(dt, f) {
+    const stand = this.stand && !!this.game.rider.standing;
     this._move(f, this.spot.x, this.pad.pos.y + this.rest, this.spot.z, dt);
-    f.yaw = this.yaw = this.pad.yaw; f.roll = this.roll = 0;
-    f.pitch = this.pitch = this.stand ? 0 : LAND.SIT;
+    f.vel.set(0, 0, 0);
+    f.speed = 0;
+    f.yaw = this.yaw = this.landYaw;
+    f.roll = this.roll = 0;
+    f.pitch = this.pitch = stand ? 0 : LAND.SIT;
   }
 
   _mount(dt, f) {
     const L = LAND, g = this.game, pad = this.pad, t = this.t, S = this.spot, W = this.away;
-    const stand = this.stand;
-    const go = smooth(seg(t, 0.16, 0.56));                  // from her place to where the broom waits
-    const up = stand ? 1 : smooth(seg(t, 0.14, 0.44));
+    const stand = this.stand && !!g.rider.standing;
+    const u = clamp(t / L.T_MOUNT, 0, 1);
+    const go = smooth(seg(u, 0.2, 1.0));
+    const up = stand ? 1 : smooth(seg(u, 0.15, 0.9));
     this._move(f, lerp(S.x, W.x, go), pad.pos.y + lerp(this.rest, APPROACH.HOVER, up), lerp(S.z, W.z, go), dt);
-    this.pitch = stand ? 0 : L.SIT * (1 - smooth(seg(t, 0.12, 0.46)));
-    // (the way out is the way she is facing, unless something has been built across it)
-    f.yaw = this.yaw = pad.yaw + turn(this.out - pad.yaw) * smooth(seg(t, 0.14, 0.44)); f.pitch = this.pitch; f.roll = this.roll = 0;
-    if (t >= 0.36 && this._once('puff')) {
+    this.pitch = stand ? 0 : L.SIT * (1 - smooth(seg(u, 0.1, 0.9)));
+    f.yaw = this.yaw = this.landYaw + turn(this.out - this.landYaw) * smooth(seg(u, 0.15, 0.95));
+    f.pitch = this.pitch; f.roll = this.roll = 0;
+
+    if (u >= 0.55 && this._once('puff')) {
       const sun = g.fx.sunTint(g.rider.sunVis);
-      puff(g.fx, f.pos.x, pad.pos.y + 1.25, f.pos.z, stand ? 15 : 9, sun, 0.5, 1.6);
+      puff(g.fx, f.pos.x, pad.pos.y + 1.15, f.pos.z, stand ? 12 : 8, sun, 0.42, 1.5);
       dustRing(g.fx, S.x, pad.pos.y, S.z, 0.3, 12, sun);
-      g.sound?.whoosh?.(0.3);
+      g.sound?.whoosh?.(0.32);
+      this.since = 0;
     }
-    if (t >= 0.40 && this._once('swap')) this.since = 0;
-    this.focus.lerp(f.pos, 1 - Math.exp(-dt * 3));
-    if (t >= L.T_ON) this._depart(f);
+    this.focus.lerp(f.pos, 1 - Math.exp(-dt * 6));
+    if (t >= L.T_MOUNT) this._depart();
   }
 
-  /** Lay out the way off the pad: up over its edge, out the way she faces, a dip beyond it. */
-  _depart(f) {
+  _depart() {
     const pad = this.pad, A = APPROACH, W = this.away, g = this.game;
     const dx = Math.sin(this.out), dz = -Math.cos(this.out), rx = -dz, rz = dx;
-    const base = pad.pos.y + A.HOVER, N = 44;
+    const base = pad.pos.y + A.HOVER, N = 24;
     const fl = new Float64Array(N), ys = new Float64Array(N);
     for (let i = 0; i < N; i++) {
       const x = W.x + dx * i, z = W.z + dz * i;
-      fl[i] = Math.max(this.floorAt(x, z), this.floorAt(x + rx * 0.7, z + rz * 0.7), this.floorAt(x - rx * 0.7, z - rz * 0.7));
+      fl[i] = Math.max(this.floorAt(x, z), this.floorAt(x + rx * 0.65, z + rz * 0.65), this.floorAt(x - rx * 0.65, z - rz * 0.65));
     }
-    // the edge: where the floor falls away from under the platform
-    let edge = Math.ceil(pad.radius) + 1;
-    for (let i = 0; i < 16; i++) if (fl[i] < pad.pos.y - 1.2) { edge = i; break; }
-    let lift = 0.3, beyond = -1e9;
-    for (let i = 0; i <= edge; i++) lift = Math.max(lift, fl[i] + A.BOOT - base);
-    for (let i = edge + 2; i < Math.min(N, edge + 28); i++) beyond = Math.max(beyond, fl[i]);
-    const dip = clamp(base - beyond - 3.2, 0, 2.6);
+    let lift = 0.55;
+    const check = Math.min(N, Math.ceil((pad.radius || 1.4) + 3));
+    for (let i = 0; i < check; i++) lift = Math.max(lift, fl[i] + A.BOOT - base);
     for (let i = 0; i < N; i++) {
-      const out = i - edge;
-      const y = base + lift * smooth(seg(i, 0, 1.4)) - (lift + dip) * smooth(seg(out, 0, 8)) + (0.55 * dip + 0.4) * smooth(seg(out, 9, 26));
-      ys[i] = Math.max(y, fl[i] + (i <= edge ? A.BOOT : 1.7));
+      const climb = lift * smooth(seg(i, 0, 3.5)) + 0.12 * Math.max(0, i - 3.5);
+      ys[i] = Math.max(base + climb, fl[i] + (i < check ? A.BOOT : 1.35));
     }
-    for (let i = N - 2; i >= 0; i--) if (ys[i] < ys[i + 1] - 0.8) ys[i] = ys[i + 1] - 0.8;
-    for (let pass = 0; pass < 2; pass++) for (let i = 1; i < N - 1; i++) ys[i] = Math.max(0.25 * ys[i - 1] + 0.5 * ys[i] + 0.25 * ys[i + 1], Math.min(ys[i], fl[i] + 0.8));
     ys[0] = base;
     this.dep = { x: W.x, z: W.z, dx, dz, ys, d: 0 };
-    this.v = 0;
+    this.v = 3;
+    if (this.cam) { this.cam = false; g.chase.release(0.65); }
     this.on.leave?.(pad);
-    g.sound?.whoosh?.(0.8, true);
-    dustRing(g.fx, this.spot.x, pad.pos.y, this.spot.z, 0.5, 16, g.fx.sunTint(g.rider.sunVis));
+    g.sound?.whoosh?.(0.75, true);
+    dustRing(g.fx, this.spot.x, pad.pos.y, this.spot.z, 0.45, 14, g.fx.sunTint(g.rider.sunVis));
     this._set('launch');
   }
 
   _launch(dt, f) {
     const L = LAND, D = this.dep, t = this.t;
-    // a moment to lift and drift to the lip, then away
-    this.v = t < 0.35 ? 5 * smooth(t / 0.35) : 5 + (SPEEDS.CRUISE - 5) * smooth(seg(t, 0.35, L.T_LAUNCH));
+    const u = clamp(t / L.T_LAUNCH, 0, 1);
+    this.v = lerp(5, SPEEDS.CRUISE * 0.88, easeOut(u));
     D.d += this.v * dt;
-    const n = D.ys.length, fi = clamp(D.d, 0, n - 1.001), i = Math.floor(fi), u = fi - i;
-    const y = lerp(D.ys[i], D.ys[i + 1], u);
+    const n = D.ys.length, fi = clamp(D.d, 0, n - 1.001), i = Math.floor(fi), frac = fi - i;
+    const y = lerp(D.ys[i], D.ys[i + 1], frac);
     this._move(f, D.x + D.dx * D.d, y, D.z + D.dz * D.d, dt);
-    this.pitch = damp(this.pitch, Math.atan(D.ys[i + 1] - D.ys[i]), 5, dt);
-    f.yaw = this.yaw = this.out; f.pitch = this.pitch; f.roll = this.roll = damp(this.roll, 0, 5, dt);
-    this.script.quiet = D.d < 5;
-    this.focus.lerp(f.pos, 1 - Math.exp(-dt * 14));
-    // The camera watches her go from where it was, and falls in behind once she is clear of the
-    // pad. (Behind her while she stands there is, as often as not, inside the tower.)
-    if (this.cam && D.d > LAND.CAM_OUT) { this.cam = false; this.game.chase.release(1.2); }
+    this.pitch = damp(this.pitch, clamp(Math.atan(D.ys[i + 1] - D.ys[i]), -0.15, 0.35), 7, dt);
+    f.yaw = this.yaw = this.out;
+    f.pitch = this.pitch;
+    f.roll = this.roll = damp(this.roll, 0, 7, dt);
+    this.script.quiet = D.d < 3.5;
+
     if (t >= L.T_LAUNCH || D.d > n - 2) {
-      // the broom is hers again, at a cruise, on the heading and slope it has
-      if (this.cam) { this.cam = false; this.game.chase.release(1.0); }
       f.auto = null;
-      f.speed = Math.max(this.v, SPEEDS.SLOW);
+      f.speed = Math.max(this.v, SPEEDS.SLOW + 4);
       f.vel.copy(f.fwd).multiplyScalar(f.speed);
-      this.pad = null; this.path = null; this.dep = null;
+      this.pad = null; this.dep = null;
       this._set('fly');
     }
   }
 
-  /** The rider's pose for where the landing has got to: the hop, the squash, which model shows. */
+  /** Pose the seated / standing rider cleanly through mid-air transition, touchdown settle, and launch. */
   _pose() {
     const g = this.game, r = g.rider, seat = r.seat, off = r.off, L = LAND, t = this.t;
     const stand = this.stand && !!r.standing;
     seat.hop = 0; seat.sy = 1; seat.calm = 0;
     off.on = false; off.y = 0; off.sy = 1;
-    const floorY = this.pad ? this.pad.pos.y - g.flight.pos.y : 0;     // the pad's floor, in the rider's frame
-    if (this.state === 'dismount') {
-      // crouch, spring up, fall, land
-      const crouch = smooth(seg(t, 0, 0.18)), rise = easeOut(seg(t, 0.18, L.T_SWAP + 0.02)), fall = easeIn(seg(t, L.T_SWAP + 0.02, L.T_TOUCH));
-      const sy = t < L.T_TOUCH ? lerp(lerp(lerp(1, 0.84, crouch), 1.16, rise), 1.02, fall) : 1 - 0.2 * ring(t - L.T_TOUCH, 15, 8);
-      const hop = lerp(lerp(lerp(0, -0.07, crouch), 0.52, rise), 0, fall);
-      if (stand && t >= L.T_SWAP) {
-        off.on = true; off.sy = sy;
-        off.y = floorY + 0.42 * (1 - easeIn(seg(t, L.T_SWAP, L.T_TOUCH)));
-      } else { seat.hop = hop; seat.sy = sy; }
-      seat.calm = stand ? 0 : smooth(seg(t, 0.1, 0.6));
+    const floorY = this.pad ? this.pad.pos.y - g.flight.pos.y : 0;
+
+    if (this.state === 'descent') {
+      const u = clamp(t / this.dur, 0, 1);
+      if (stand && u >= L.U_SWAP) {
+        // Mid-air landing pose: descending cleanly onto her boots from broom height to the surface
+        const w = seg(u, L.U_SWAP, 1.0);
+        const drop = (1 - easeIn(w)) * Math.min(0.48, Math.max(0.18, g.flight.pos.y - this.pad.pos.y - 0.35));
+        off.on = true;
+        off.y = floorY + drop;
+        // Slight airborne extension anticipating contact, easing toward 1.0 right at touchdown
+        off.sy = lerp(1.10, 0.97, smooth(w));
+      } else {
+        // Seated flare anticipation before mid-air dismount (or full seated settle if no standing mesh)
+        const pre = seg(u, 0, L.U_SWAP);
+        seat.hop = stand ? 0.24 * smooth(seg(pre, 0.35, 1.0)) - 0.05 * Math.sin(pre * Math.PI) : 0;
+        seat.sy = stand ? lerp(0.94, 1.08, smooth(pre)) : 1 - 0.08 * Math.sin(u * Math.PI);
+        seat.calm = smooth(u);
+      }
     } else if (this.state === 'landed') {
-      if (stand) { off.on = true; off.y = floorY; } else seat.calm = 1;
+      // Crisp, clean settle on touchdown: single smooth knee-absorb compression to rest (no rubbery bounce)
+      const st = this.settleT;
+      let sy = 1;
+      if (st < L.T_SETTLE) {
+        const w = st / L.T_SETTLE;
+        const dip = Math.sin(Math.pow(w, 0.65) * Math.PI) * (1 - w * 0.35);
+        sy = 1 - 0.14 * dip;
+      }
+      if (stand) {
+        off.on = true;
+        off.y = floorY;
+        off.sy = sy;
+      } else {
+        seat.calm = 1;
+        seat.sy = sy;
+      }
     } else if (this.state === 'mount') {
-      const crouch = smooth(seg(t, 0, 0.16)), rise = easeOut(seg(t, 0.16, 0.42));
-      const sy = lerp(lerp(1, 0.82, crouch), 1.15, rise), hop = 0.5 * rise;
-      if (t < 0.40) {
-        if (stand) { off.on = true; off.y = floorY + hop; off.sy = sy; } else { seat.hop = hop * 0.8; seat.sy = sy; seat.calm = 1 - smooth(seg(t, 0.1, 0.4)); }
+      const u = clamp(t / L.T_MOUNT, 0, 1);
+      const crouch = smooth(seg(u, 0, 0.35)), rise = easeOut(seg(u, 0.35, 1.0));
+      const sy = lerp(lerp(1, 0.85, crouch), 1.12, rise);
+      const hop = 0.38 * rise;
+      if (u < 0.62 && stand) {
+        off.on = true; off.y = floorY + hop; off.sy = sy;
+      } else {
+        seat.hop = hop * 0.6; seat.sy = sy; seat.calm = 1 - u;
       }
     }
-    // back on the broom: it dips under her and bobs back (through the first of the launch too)
-    if (this.since < 1.4 && (this.state === 'mount' || this.state === 'launch')) {
-      const k = stand ? 0.42 : 0.3;
-      seat.hop += k * ring(this.since, 9, 5.5);
-      seat.sy *= 1 + 0.13 * ring(this.since, 13, 7);
+
+    if (this.since < 0.7 && (this.state === 'mount' || this.state === 'launch')) {
+      const env = Math.exp(-this.since * 7.5) * Math.cos(this.since * 12);
+      seat.hop -= 0.14 * env;
+      seat.sy *= 1 - 0.07 * env;
     }
   }
 }

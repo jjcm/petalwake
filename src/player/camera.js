@@ -37,6 +37,10 @@ export class ChaseCamera {
     this.shake = 0;
     this.orbit = 0;         // title-screen orbit angle offset
     this.orbitPitch = 0;
+    this.vehicleScale = 1;  // > 1 pulls back & raises framing for larger mounts (catbus)
+    this._vScale = 1;
+    this.targetOffset = new THREE.Vector3();
+    this._tOff = new THREE.Vector3();
     this._target = new THREE.Vector3();
     this._pos = new THREE.Vector3();
     this._up = new THREE.Vector3();
@@ -152,24 +156,31 @@ export class ChaseCamera {
         zoom = 1 + (m.zoom[1] - 1) * (1 - Math.exp(-(v - CRUISE) / 22)) / (1 - Math.exp(-(BOOST - CRUISE) / 22));
       }
     }
-    this.dist = damp(this.dist, m.dist * zoom, 2.4, dt);
-    // rise and sink with the distance so the broom stays framed the same way
-    this.height = damp(this.height, m.height * (0.4 + 0.6 * zoom), 2.4, dt);
+    this._vScale = damp(this._vScale, this.vehicleScale, 4.0, dt);
+    this._tOff.lerp(this.targetOffset, 1 - Math.exp(-5.0 * dt));
+    const vs = this._vScale;
+    this.dist = damp(this.dist, m.dist * zoom * vs, 2.4, dt);
+    // rise and sink with the distance so the broom (or catbus) stays framed the same way
+    this.height = damp(this.height, m.height * (0.4 + 0.6 * zoom) * (1 + (vs - 1) * 1.15), 2.4, dt);
     this.fov = damp(this.fov, m.fov + 11 * Math.min(sk, 1.3) + 7 * f.boosting, 2.6, dt);
+
+    const ax = f.pos.x + this._tOff.x;
+    const ay = f.pos.y + this._tOff.y;
+    const az = f.pos.z + this._tOff.z;
 
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
     const dx = Math.sin(this.yaw) * cp, dy = sp, dz = -Math.cos(this.yaw) * cp;
     // sit behind and above, measured in the camera's own tilted frame so dives stay framed
     const ux = -Math.sin(this.yaw) * sp, uy = cp, uz = Math.cos(this.yaw) * sp;
     // the camera rides out most of a landing bounce, so the broom is seen to dip and spring back
-    const fy = f.pos.y - (f.bob || 0) * 0.65;
+    const fy = ay - (f.bob || 0) * 0.65;
     const p = this._pos.set(
-      f.pos.x - dx * this.dist + ux * this.height,
+      ax - dx * this.dist + ux * this.height,
       fy - dy * this.dist + uy * this.height,
-      f.pos.z - dz * this.dist + uz * this.height,
+      az - dz * this.dist + uz * this.height,
     );
     // keep out of the buildings, the ground and the swell
-    this._unblock(p, f.pos.x, fy + 0.6, f.pos.z, this._block, dt);
+    this._unblock(p, ax, fy + 0.6, az, this._block, dt, 0.9 * vs * vs);
     const floor = surfaceAt(p.x, p.z) + 0.45;
     if (p.y < floor) p.y = floor;
 
@@ -181,7 +192,7 @@ export class ChaseCamera {
 
     cam.position.copy(p);
     const t = this._target.set(
-      f.pos.x + f.fwd.x * m.look, fy + f.fwd.y * m.look - m.drop, f.pos.z + f.fwd.z * m.look,
+      ax + f.fwd.x * m.look, fy + f.fwd.y * m.look - m.drop, az + f.fwd.z * m.look,
     );
     this._up.set(0, 1, 0);
     cam.up.copy(this._up);

@@ -7,12 +7,15 @@
 //
 // main.js makes one of these and calls update() once a step, before the flight model moves.
 // Debug hooks (on the game object, window.PW): land(padId?), takeoff(), kickflip(), padsNear().
+import * as THREE from 'three';
 import { buildPadTest } from './padtest.js';
 import { Beacons } from './beacons.js';
 import { Landing, LAND } from './landing.js';
+import { findLandingSpot } from './surface.js';
 import { Courier } from './courier.js';
 import { Kickflip } from './tricks.js';
 import { Hud } from './hud.js';
+import { CATBUS } from '../player/catbus.js';
 
 /** localStorage, where there is one (private windows and embeds may refuse). */
 class Store {
@@ -47,16 +50,19 @@ export class Gameplay {
     this.courier = new Courier(game, this.store, this.hud);
     this.trick = new Kickflip(game, this.store, this.hud);
     this.landing = new Landing(game, {
-      touch: (pad) => this.courier.arrive(pad),
-      leave: () => { this.hush = 2.4; },
-      broke: () => { this.hush = 1.2; },
+      touch: (pad) => { if (pad && !pad.adhoc) this.courier.arrive(pad); },
+      leave: () => { this.hush = 1.6; },
+      broke: () => { this.hush = 0.9; },
     });
     if (this.trick.unlocked) this.hud.hint('flip', '<kbd>Q</kbd> kickflip');
 
     game.land = (id) => this.land(id);
-    game.takeoff = () => this.landing.takeoff();
+    game.takeoff = () => (game.catbus?.mounted ? game.catbus.beginTakeoff(game) : this.landing.takeoff());
     game.kickflip = () => this.trick.start(true);
     game.padsNear = () => this.padsNear();
+    game.mountCatbus = () => this.mountCatbus();
+    game.dismountCatbus = () => game.catbus?.dismount(game) ?? false;
+    this.hud.hint('catbus', '<kbd>E</kbd> mount catbus');
     this._bind();
     this._loadStand();
   }
@@ -102,9 +108,9 @@ export class Gameplay {
     if (this.open.length) {
       this.beacons = new Beacons(this.open);
       g.pipeline.overlay.add(this.beacons.group);
-      this.hud.hint('land', '<kbd>Space</kbd><kbd>Space</kbd> land on a tower');
     }
-    if (this.landing.busy && !this.open.includes(this.landing.pad)) this.landing.abort();
+    this.hud.hint('land', '<kbd>Space</kbd><kbd>Space</kbd> land');
+    if (this.landing.busy && this.landing.pad && !this.landing.pad.adhoc && !this.open.includes(this.landing.pad)) this.landing.abort();
     this.zone = null;
     this.courier.setPads(this.open);
   }
@@ -112,75 +118,165 @@ export class Gameplay {
   /** The landing zone: the nearest pad within reach (with a little stickiness, so two do not flicker). */
   _zone() {
     const f = this.game.flight, L = this.landing;
-    if (L.busy) return L.state === 'approach' || L.state === 'settle' ? L.pad : null;
+    if (L.busy) return L.pad && !L.pad.adhoc && L.state === 'descent' ? L.pad : null;
     if (this.hush > 0) return null;
     let best = null, bd = Infinity;
     for (const p of this.open) {
-      const d = Math.hypot(p.pos.x - f.pos.x, p.pos.y - f.pos.y, p.pos.z - f.pos.z) - (p === this.zone ? 6 : 0);
+      const d = Math.hypot(p.pos.x - f.pos.x, p.pos.y - f.pos.y, p.pos.z - f.pos.z) - (p === this.zone ? 5 : 0);
       if (d < LAND.RANGE && d < bd) { bd = d; best = p; }
     }
     return best;
   }
 
+  /** Try to land at a nearby designated pad or on any valid flat-enough ground/roof below. */
+  _tryLand() {
+    const g = this.game, f = g.flight, L = this.landing;
+    if (this.zone && L.begin(this.zone)) return true;
+    const spot = findLandingSpot(g, f.pos, f.vel, f.yaw, {
+      radius: 0.85,
+      maxAgl: 25,
+      maxClimb: 5.0,
+      leadTime: 0.34,
+      maxLead: 8.5,
+    });
+    if (!spot) {
+      if (f.overWater) g.toast?.('only open water below');
+      else if (f.agl > 25) g.toast?.('come lower to set down');
+      else g.toast?.('too steep to land here');
+      return false;
+    }
+    // Snap to an open perch if the chosen spot falls right onto it so parcel deliveries fire
+    for (const p of this.open) {
+      if (Math.hypot(p.pos.x - spot.x, p.pos.z - spot.z) < p.radius + 3.2 && Math.abs(p.pos.y - spot.y) < 2.2) {
+        if (L.begin(p)) return true;
+      }
+    }
+    return L.begin({
+      id: null,
+      name: null,
+      adhoc: true,
+      kind: spot.kind,
+      pos: new THREE.Vector3(spot.x, spot.y, spot.z),
+      radius: 1.4,
+      yaw: f.yaw,
+      approach: f.yaw,
+    });
+  }
+
   _prompt(play) {
-    const L = this.landing;
+    const L = this.landing, cb = this.game.catbus, f = this.game.flight;
     let html = null;
     if (play) {
-      if (L.state === 'landed') html = '<kbd>Space</kbd> to take off';
-      else if (L.state === 'approach' || L.state === 'settle') html = `coming in to <em>${esc(L.pad.name)}</em><small><kbd>Shift</kbd> breaks off</small>`;
-      else if (L.state === 'fly' && this.zone) html = `<kbd>Space</kbd><span class="x2">×2</span> to land<em>${esc(this.zone.name)}</em>`;
+      if (cb && cb.mounted) {
+        if (cb.state === 'ground' && Math.abs(cb.groundSpeed) < 1.5) {
+          html = '<kbd>W</kbd> walk · <kbd>Shift</kbd> sprint · <kbd>Space</kbd> take off<small><kbd>E</kbd> dismount</small>';
+        } else if (cb.state === 'fly' && this.zone) {
+          html = `<kbd>Space</kbd><span class="x2">×2</span> to land<em>${esc(this.zone.name)}</em>`;
+        }
+      } else if (cb && !cb.summon && cb.distanceTo(f.pos) < CATBUS.MOUNT_RANGE && (L.landed || f.agl < 12)) {
+        html = L.landed
+          ? '<kbd>E</kbd> ride the catbus<small><kbd>Space</kbd> take off on broom</small>'
+          : '<kbd>E</kbd> ride the catbus';
+      } else if (L.state === 'landed') {
+        html = cb ? '<kbd>Space</kbd> to take off<small><kbd>E</kbd> call catbus</small>' : '<kbd>Space</kbd> to take off';
+      } else if (L.state === 'descent' && L.pad && !L.pad.adhoc) {
+        html = `setting down at <em>${esc(L.pad.name)}</em>`;
+      } else if (L.state === 'fly' && this.zone) {
+        html = `<kbd>Space</kbd><span class="x2">×2</span> to land<em>${esc(this.zone.name)}</em>`;
+      }
     }
     this.hud.prompt(html);
   }
 
   /** Once a step, before the flight model moves. */
   update(dt, ctl) {
-    const g = this.game, f = g.flight, L = this.landing;
+    const g = this.game, f = g.flight, L = this.landing, cb = g.catbus;
     const town = g.town || null;
     if (town !== this.town || (town && Array.isArray(town.pads) ? town.pads.length : 0) !== this.nPads) this._bind();
 
-    // keys are drained every step and acted on only while she is being flown
+    // keys are drained every step and acted on only while in play
     const play = g.state === 'play', inp = g.input;
-    const tapLand = inp.take('Space2'), tapSpace = inp.take('Space'), tapQ = inp.take('KeyQ');
+    const tapLand = inp.take('Space2'), tapSpace = inp.take('Space'), tapQ = inp.take('KeyQ'), tapE = inp.take('KeyE');
+
+    // Mount / summon+mount / dismount the catbus on E
+    if (play && tapE && cb) {
+      if (cb.mounted) {
+        cb.dismount(g);
+      } else if (!cb.summon && cb.distanceTo(f.pos) < CATBUS.MOUNT_RANGE) {
+        cb.mount(g);
+      } else if (!cb.summon && (L.landed || f.agl < 22)) {
+        cb.callToPlayer(g, true);
+      } else if (!cb.summon) {
+        g.toast?.('come closer to the ground to call the catbus');
+      }
+    }
 
     // the trick and the landing each pose the seated rider from a clean slate
     const seat = g.rider.seat;
     seat.hop = 0; seat.sy = 1; seat.flip = 0; seat.calm = 0;
-    if (play && tapQ) this.trick.start();
+    if (play && tapQ && !(cb && cb.mounted)) this.trick.start();
     this.trick.update(dt);
+
+    if (cb) cb.update(dt, g.time, g, ctl, { tapSpace, tapLand });
 
     L.update(dt, ctl);
     if (this.hush > 0) this.hush -= dt;
-    if (this.open.length) {
-      this.zone = play || this.debug ? this._zone() : null;
-      if (play) {
-        if (L.state === 'fly' && tapLand && this.zone) L.begin(this.zone);
-        else if (L.landed && (tapSpace || tapLand)) L.takeoff();
-        // the first job is announced once she is under way
-        if (!this.playing) { this.playing = true; this.intro = 2.4; }
-        if (this.intro > 0 && (this.intro -= dt) <= 0 && this.courier.target && !L.busy) {
-          this.hud.card('a parcel for', this.courier.target.name, 'follow the gold light · Space twice by a pad to land', 5);
-        }
+
+    this.zone = (play || this.debug) && this.open.length ? this._zone() : null;
+    if (play && !(cb && cb.mounted)) {
+      if (L.state === 'fly' && tapLand) this._tryLand();
+      else if (L.landed && (tapSpace || tapLand)) L.takeoff();
+      if (!this.playing && this.open.length) { this.playing = true; this.intro = 2.4; }
+      if (this.intro > 0 && (this.intro -= dt) <= 0 && this.courier.target && !L.busy) {
+        this.hud.card('a parcel for', this.courier.target.name, 'follow the gold light · Space twice to land', 5);
       }
-      this.beacons.update(dt, f.pos, this.zone, this.courier.target, L.pad);
-      this.courier.update(dt);
-      this._prompt(play);
-    } else this.hud.prompt(null);
+    }
+    if (this.beacons) this.beacons.update(dt, f.pos, this.zone, this.courier.target, L.pad && !L.pad.adhoc ? L.pad : null);
+    if (this.open.length) this.courier.update(dt);
+    this._prompt(play);
     this.hud.update(dt);
   }
 
+  /** Debug helper: summon if far away and mount the catbus immediately. */
+  mountCatbus() {
+    const g = this.game, cb = g.catbus, f = g.flight;
+    if (!cb) return { ok: false, why: 'no catbus' };
+    if (cb.mounted) return { ok: true, state: cb.state, pos: cb.pos.toArray().map((v) => +v.toFixed(1)) };
+    if (cb.distanceTo(f.pos) > CATBUS.MOUNT_RANGE) {
+      const spot = findLandingSpot(g, f.pos, f.vel, f.yaw, { radius: 1.35, maxAgl: 200, maxClimb: 50, searchRadius: 24 });
+      if (spot) {
+        cb.pos.set(spot.x, spot.y, spot.z);
+        cb.yaw = f.yaw;
+        cb.state = 'ground';
+      }
+    }
+    cb.mount(g);
+    return { ok: true, state: cb.state, pos: cb.pos.toArray().map((v) => +v.toFixed(1)) };
+  }
+
   // ------------------------------------------------------------------------------- debug hooks
-  /** Land on a pad (by id or name; the landing zone, or else the nearest, if none is given). */
+  /** Land on a pad (by id or name), or right here on valid ground/roof ('here' or omitted). */
   land(id) {
     const f = this.game.flight, L = this.landing;
+    if (L.busy) return { ok: false, why: `busy (${L.state})` };
+    if (id === 'here') {
+      const ok = this._tryLand();
+      return ok
+        ? { ok: true, pad: L.pad.id || L.pad.kind, pos: L.pad.pos.toArray().map((v) => +v.toFixed(2)), dur: +L.dur.toFixed(2) }
+        : { ok: false, why: 'no flat surface in reach' };
+    }
     const d = (p) => Math.hypot(p.pos.x - f.pos.x, p.pos.y - f.pos.y, p.pos.z - f.pos.z);
     let pad = id ? this.pads.find((p) => p.id === id || p.name === id) : this.zone;
-    if (!pad && !id) pad = [...this.open].sort((a, b) => d(a) - d(b))[0];
+    if (!pad && !id) {
+      if (this._tryLand()) {
+        return { ok: true, pad: L.pad.id || L.pad.kind, pos: L.pad.pos.toArray().map((v) => +v.toFixed(2)), dur: +L.dur.toFixed(2) };
+      }
+      pad = [...this.open].sort((a, b) => d(a) - d(b))[0];
+    }
     if (!pad) return { ok: false, why: 'no such pad' };
-    if (L.busy) return { ok: false, why: `busy (${L.state})` };
-    if (!L.begin(pad)) return { ok: false, why: 'no clear way in' };
+    if (!L.begin(pad, { force: !!id })) return { ok: false, why: 'no clear way in' };
     const P = L.path;
-    return { ok: true, pad: pad.id, dist: +d(pad).toFixed(1), path: +P.len.toFixed(1), final: P.final, lift: +P.lift.toFixed(2), bad: +P.bad.toFixed(2), own: L.way(pad).own };
+    return { ok: true, pad: pad.id, dist: +d(pad).toFixed(1), path: +P.len.toFixed(1), dur: +L.dur.toFixed(2), lift: +P.lift.toFixed(2), own: L.way(pad).own };
   }
 
   /** Every pad, nearest first. */
