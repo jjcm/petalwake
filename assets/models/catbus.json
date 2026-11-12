@@ -1,0 +1,39 @@
+{
+  "name": "catbus",
+  "yawOffset": 180,
+  "scale": 1.22,
+  "stripRootMotion": false,
+  "furLength": 0.082,
+  "furDensity": 48.0,
+  "lanternPivotL": [
+    0.7642,
+    1.5068,
+    1.1998
+  ],
+  "lanternPivotR": [
+    -0.7522,
+    1.4891,
+    1.4459
+  ],
+  "railBaseY": 1.9,
+  "bounds": {
+    "min": [
+      -0.8474,
+      0.0,
+      -2.25
+    ],
+    "max": [
+      0.8257,
+      2.2056,
+      2.25
+    ]
+  },
+  "tris": {
+    "body": 73948,
+    "lantern": 2451,
+    "roof_rail": 3601,
+    "fur_hull": 15808,
+    "body_lod1": 14771
+  },
+  "bytes": 4101616
+}
