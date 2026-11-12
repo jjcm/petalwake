@@ -64,7 +64,7 @@ export class Rider {
     this.sun.shadow.bias = -0.0006;
     this.sun.shadow.normalBias = 0.012;
     const sc = this.sun.shadow.camera;
-    sc.left = -2.2; sc.right = 2.2; sc.top = 2.2; sc.bottom = -2.2; sc.near = 0.5; sc.far = 14;
+    sc.left = -3.4; sc.right = 3.4; sc.top = 3.4; sc.bottom = -3.4; sc.near = 0.5; sc.far = 18;
     this.fill = new THREE.HemisphereLight(0xffffff, 0xffffff, 1);
     this.lights = new THREE.Group();
     this.lights.add(this.sun, this.sun.target, this.fill);
@@ -272,17 +272,23 @@ export class Rider {
     this.fill.intensity = Math.PI * 0.55;
   }
 
-  /** Render the rider's depth from the sun and publish the matrix the world shaders use. */
-  renderShadow(reversed) {
-    const cam = this.shadowCam, s = U.uSunDir.value, p = this.group.position;
+  /** Render the active rider/mount's depth from the sun and publish the matrix the world shaders use. */
+  renderShadow(reversed, subject = this.group, extent = SHADOW_EXTENT, onBefore, onAfter) {
+    const cam = this.shadowCam, s = U.uSunDir.value, p = subject.position;
+    if (cam.right !== extent) {
+      cam.left = -extent; cam.right = extent; cam.top = extent; cam.bottom = -extent;
+      cam.updateProjectionMatrix();
+    }
     cam.position.copy(p).addScaledVector(s, 30);
     cam.up.set(0, 1, 0);
     cam.lookAt(p);
     cam.updateMatrixWorld();
     const r = this.renderer;
-    // draw only the rider, with a depth-only material
-    const parent = this.group.parent;
-    this.shadowScene.add(this.group);
+    const parent = subject.parent;
+    const wasVis = subject.visible;
+    subject.visible = true;
+    onBefore?.();
+    this.shadowScene.add(subject);
     this.shadowScene.overrideMaterial = this.depthMat;
     const prev = r.shadowMap.enabled;
     r.shadowMap.enabled = false;
@@ -291,10 +297,12 @@ export class Rider {
     r.setRenderTarget(null);
     r.shadowMap.enabled = prev;
     this.shadowScene.overrideMaterial = null;
-    if (parent) parent.add(this.group);
+    onAfter?.();
+    subject.visible = wasVis;
+    if (parent) parent.add(subject);
     // world -> shadow uv + standard depth (0 near .. 1 far), independent of the depth convention
     const view = cam.matrixWorldInverse;
-    const e = SHADOW_EXTENT, n = cam.near, f = cam.far;
+    const e = extent, n = cam.near, f = cam.far;
     const proj = this._m.set(
       0.5 / e, 0, 0, 0.5,
       0, 0.5 / e, 0, 0.5,

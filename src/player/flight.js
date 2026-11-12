@@ -252,17 +252,18 @@ export class Flight {
   _autoStep(dt, time) {
     const a = this.auto, yaw0 = this.yaw, pitch0 = this.pitch;
     this._prevVel.copy(this.vel);
+    this.touchdown = 0;
     a.step(dt, time, this);                    // sets pos, vel, speed, yaw, pitch, roll (and may let go)
     this._dir();
     const dy = Math.atan2(Math.sin(this.yaw - yaw0), Math.cos(this.yaw - yaw0));
     const inv = 1 / Math.max(dt, 1e-4);
     this.turnRate = damp(this.turnRate, clamp(dy * inv, -3, 3), 9, dt);
     this.pitchRate = damp(this.pitchRate, clamp((this.pitch - pitch0) * inv, -3, 3), 9, dt);
-    this.boosting = damp(this.boosting, 0, 2.2, dt);
+    if (!a.keepBoost) this.boosting = damp(this.boosting, 0, 2.2, dt);
     this.flare = damp(this.flare, 0, 8, dt);
     this.homing = damp(this.homing, 0, 2, dt);
     this.bump = Math.max(0, this.bump - dt * 2.4);
-    this.touchdown = 0; this._sink = 0; this._air = false; this.holdAgl = -1;
+    this._sink = 0; this._air = false; this.holdAgl = -1;
     // (the landing bounce keeps springing, so a kick from the script rings out the same way)
     const wb = 7.2, zb = 0.19;
     this.bobV += (-wb * wb * this.bob - 2 * zb * wb * this.bobV) * dt;
@@ -270,7 +271,7 @@ export class Flight {
     this._book(this.surfaceAt(this.pos.x, this.pos.z, time), dt);
     // standing on a platform is not skimming whatever lies under it: no petals through the floor
     if (a.quiet) this.agl = Math.max(this.agl, 40);
-    this.gust = Math.min(1, this.gust + dt * 0.035);
+    if (!a.keepBoost) this.gust = Math.min(1, this.gust + dt * 0.035);
   }
 
   update(dt, input, time) {

@@ -52,8 +52,9 @@ The first version, from before the towns, is still at <https://petalwake.non.io>
 | <kbd>W</kbd> <kbd>S</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | dive, climb |
 | <kbd>A</kbd> <kbd>D</kbd> or <kbd>←</kbd> <kbd>→</kbd> | bank |
 | <kbd>Shift</kbd> | ride the gust (boost) |
-| <kbd>Space</kbd> | ease up (brake) |
-| <kbd>Space</kbd> <kbd>Space</kbd> | land, when a landing place lights up near you; <kbd>Space</kbd> again to take off |
+| <kbd>Space</kbd> | ease up (brake); on the catbus, take off from the ground |
+| <kbd>Space</kbd> <kbd>Space</kbd> | land on a tower, a roof, or open ground; <kbd>Space</kbd> again to take off |
+| <kbd>E</kbd> | mount or dismount the catbus (or call it when landed) |
 | <kbd>Q</kbd> | kickflip, once you have caught ten wind seeds |
 | <kbd>J</kbd> | the journal of treasures found |
 | Mouse | click the view to steer with it; left button boosts, right button brakes |

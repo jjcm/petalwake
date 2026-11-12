@@ -15,6 +15,7 @@ import { findLandingSpot } from './surface.js';
 import { Courier } from './courier.js';
 import { Kickflip } from './tricks.js';
 import { Hud } from './hud.js';
+import { CATBUS } from '../player/catbus.js';
 
 /** localStorage, where there is one (private windows and embeds may refuse). */
 class Store {
@@ -56,9 +57,12 @@ export class Gameplay {
     if (this.trick.unlocked) this.hud.hint('flip', '<kbd>Q</kbd> kickflip');
 
     game.land = (id) => this.land(id);
-    game.takeoff = () => this.landing.takeoff();
+    game.takeoff = () => (game.catbus?.mounted ? game.catbus.beginTakeoff(game) : this.landing.takeoff());
     game.kickflip = () => this.trick.start(true);
     game.padsNear = () => this.padsNear();
+    game.mountCatbus = () => this.mountCatbus();
+    game.dismountCatbus = () => game.catbus?.dismount(game) ?? false;
+    this.hud.hint('catbus', '<kbd>E</kbd> mount catbus');
     this._bind();
     this._loadStand();
   }
@@ -160,37 +164,66 @@ export class Gameplay {
   }
 
   _prompt(play) {
-    const L = this.landing;
+    const L = this.landing, cb = this.game.catbus, f = this.game.flight;
     let html = null;
     if (play) {
-      if (L.state === 'landed') html = '<kbd>Space</kbd> to take off';
-      else if (L.state === 'descent' && L.pad && !L.pad.adhoc) html = `setting down at <em>${esc(L.pad.name)}</em>`;
-      else if (L.state === 'fly' && this.zone) html = `<kbd>Space</kbd><span class="x2">×2</span> to land<em>${esc(this.zone.name)}</em>`;
+      if (cb && cb.mounted) {
+        if (cb.state === 'ground' && Math.abs(cb.groundSpeed) < 1.5) {
+          html = '<kbd>W</kbd> walk · <kbd>Shift</kbd> sprint · <kbd>Space</kbd> take off<small><kbd>E</kbd> dismount</small>';
+        } else if (cb.state === 'fly' && this.zone) {
+          html = `<kbd>Space</kbd><span class="x2">×2</span> to land<em>${esc(this.zone.name)}</em>`;
+        }
+      } else if (cb && !cb.summon && cb.distanceTo(f.pos) < CATBUS.MOUNT_RANGE && (L.landed || f.agl < 12)) {
+        html = L.landed
+          ? '<kbd>E</kbd> ride the catbus<small><kbd>Space</kbd> take off on broom</small>'
+          : '<kbd>E</kbd> ride the catbus';
+      } else if (L.state === 'landed') {
+        html = cb ? '<kbd>Space</kbd> to take off<small><kbd>E</kbd> call catbus</small>' : '<kbd>Space</kbd> to take off';
+      } else if (L.state === 'descent' && L.pad && !L.pad.adhoc) {
+        html = `setting down at <em>${esc(L.pad.name)}</em>`;
+      } else if (L.state === 'fly' && this.zone) {
+        html = `<kbd>Space</kbd><span class="x2">×2</span> to land<em>${esc(this.zone.name)}</em>`;
+      }
     }
     this.hud.prompt(html);
   }
 
   /** Once a step, before the flight model moves. */
   update(dt, ctl) {
-    const g = this.game, f = g.flight, L = this.landing;
+    const g = this.game, f = g.flight, L = this.landing, cb = g.catbus;
     const town = g.town || null;
     if (town !== this.town || (town && Array.isArray(town.pads) ? town.pads.length : 0) !== this.nPads) this._bind();
 
-    // keys are drained every step and acted on only while she is being flown
+    // keys are drained every step and acted on only while in play
     const play = g.state === 'play', inp = g.input;
-    const tapLand = inp.take('Space2'), tapSpace = inp.take('Space'), tapQ = inp.take('KeyQ');
+    const tapLand = inp.take('Space2'), tapSpace = inp.take('Space'), tapQ = inp.take('KeyQ'), tapE = inp.take('KeyE');
+
+    // Mount / summon+mount / dismount the catbus on E
+    if (play && tapE && cb) {
+      if (cb.mounted) {
+        cb.dismount(g);
+      } else if (!cb.summon && cb.distanceTo(f.pos) < CATBUS.MOUNT_RANGE) {
+        cb.mount(g);
+      } else if (!cb.summon && (L.landed || f.agl < 22)) {
+        cb.callToPlayer(g, true);
+      } else if (!cb.summon) {
+        g.toast?.('come closer to the ground to call the catbus');
+      }
+    }
 
     // the trick and the landing each pose the seated rider from a clean slate
     const seat = g.rider.seat;
     seat.hop = 0; seat.sy = 1; seat.flip = 0; seat.calm = 0;
-    if (play && tapQ) this.trick.start();
+    if (play && tapQ && !(cb && cb.mounted)) this.trick.start();
     this.trick.update(dt);
+
+    if (cb) cb.update(dt, g.time, g, ctl, { tapSpace, tapLand });
 
     L.update(dt, ctl);
     if (this.hush > 0) this.hush -= dt;
 
     this.zone = (play || this.debug) && this.open.length ? this._zone() : null;
-    if (play) {
+    if (play && !(cb && cb.mounted)) {
       if (L.state === 'fly' && tapLand) this._tryLand();
       else if (L.landed && (tapSpace || tapLand)) L.takeoff();
       if (!this.playing && this.open.length) { this.playing = true; this.intro = 2.4; }
@@ -202,6 +235,23 @@ export class Gameplay {
     if (this.open.length) this.courier.update(dt);
     this._prompt(play);
     this.hud.update(dt);
+  }
+
+  /** Debug helper: summon if far away and mount the catbus immediately. */
+  mountCatbus() {
+    const g = this.game, cb = g.catbus, f = g.flight;
+    if (!cb) return { ok: false, why: 'no catbus' };
+    if (cb.mounted) return { ok: true, state: cb.state, pos: cb.pos.toArray().map((v) => +v.toFixed(1)) };
+    if (cb.distanceTo(f.pos) > CATBUS.MOUNT_RANGE) {
+      const spot = findLandingSpot(g, f.pos, f.vel, f.yaw, { radius: 1.35, maxAgl: 200, maxClimb: 50, searchRadius: 24 });
+      if (spot) {
+        cb.pos.set(spot.x, spot.y, spot.z);
+        cb.yaw = f.yaw;
+        cb.state = 'ground';
+      }
+    }
+    cb.mount(g);
+    return { ok: true, state: cb.state, pos: cb.pos.toArray().map((v) => +v.toFixed(1)) };
   }
 
   // ------------------------------------------------------------------------------- debug hooks
