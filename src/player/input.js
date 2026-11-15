@@ -21,8 +21,10 @@ export class Input {
     this._tap = -1e9;         // when the brake was last tapped (ms)
     this._padBrake = false;   // gamepad buttons last step, for their edges
     this._padTrick = false;
+    this.touch = { x: 0, y: 0, boost: false, brake: false };
 
     window.addEventListener('keydown', (e) => {
+      if (!this.enabled || /^(INPUT|SELECT|TEXTAREA)$/.test(e.target?.tagName)) return;
       if (e.repeat) return;
       this.keys.add(e.code);
       this.pressed.add(e.code);
@@ -30,9 +32,10 @@ export class Input {
       if (this.enabled && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('blur', () => this.reset());
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.reset(); });
     document.addEventListener('pointerlockchange', () => { this.locked = document.pointerLockElement === canvas; });
-    canvas.addEventListener('click', () => { if (this.enabled && !this.locked) canvas.requestPointerLock?.()?.catch?.(() => {}); });
+    canvas.addEventListener('pointerdown', (e) => { if (e.pointerType === 'mouse' && this.enabled && !this.locked) canvas.requestPointerLock?.()?.catch?.(() => {}); });
     window.addEventListener('mousemove', (e) => {
       if (!this.locked || !this.enabled) return;
       this.stickX = Math.max(-1, Math.min(1, this.stickX + e.movementX * this.sens));
@@ -41,6 +44,20 @@ export class Input {
     window.addEventListener('mousedown', (e) => { if (this.locked) { if (e.button === 0) this.mouseBoost = true; if (e.button === 2) { this.mouseBrake = true; this.pressed.add('Space'); this._tapBrake(e.timeStamp); } } });
     window.addEventListener('mouseup', (e) => { if (e.button === 0) this.mouseBoost = false; if (e.button === 2) this.mouseBrake = false; });
     window.addEventListener('contextmenu', (e) => { if (this.enabled) e.preventDefault(); });
+  }
+
+  reset() {
+    this.keys.clear(); this.pressed.clear();
+    this.stickX = this.stickY = this.turn = this.pitch = 0;
+    this.mouseBoost = this.mouseBrake = this.boost = this.brake = false;
+    this.touch.x = this.touch.y = 0; this.touch.boost = this.touch.brake = false;
+    this._tap = -1e9; this._padBrake = this._padTrick = false;
+  }
+
+  touchAction(code, time = performance.now()) {
+    if (!this.enabled) return;
+    this.pressed.add(code);
+    if (code === 'Space') this._tapBrake(time);
   }
 
   /** A tap of the brake at time t (ms): the second of two close together is a double tap. */
@@ -63,10 +80,10 @@ export class Input {
     // the mouse stick springs back to centre like a self-centring joystick
     const relax = Math.exp(-dt * 2.6);
     this.stickX *= relax; this.stickY *= relax;
-    x += this.stickX * 1.6;
-    y += -this.stickY * 1.6;
-    let boost = k.has('ShiftLeft') || k.has('ShiftRight') || !!this.mouseBoost;
-    let brake = k.has('Space') || !!this.mouseBrake;
+    x += this.stickX * 1.6 + this.touch.x;
+    y += -this.stickY * 1.6 + this.touch.y;
+    let boost = k.has('ShiftLeft') || k.has('ShiftRight') || !!this.mouseBoost || this.touch.boost;
+    let brake = k.has('Space') || !!this.mouseBrake || this.touch.brake;
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     for (const p of pads) {
       if (!p || !p.connected) continue;

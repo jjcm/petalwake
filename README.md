@@ -73,6 +73,11 @@ island. Twelve odd places are hidden around the coast and the hills, each with i
 a treasure to find; the journal keeps hints for the ones you have not found. Down on the shore,
 the rocks are crusted with barnacles and the crabs run for it when you come by.
 
+## Touchscreen controls
+
+Touch devices get a steering stick, held boost/brake, landing taps, camera,
+kickflip and journal buttons. See [touch controls and device checks](docs/mobile-controls.md).
+
 ## Run it locally
 
 There is no build step: the page loads ES modules straight from `src/`.

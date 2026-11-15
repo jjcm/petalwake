@@ -46,7 +46,11 @@ export class Hud {
     const e = this.el.prompt;
     if (!e || html === this._prompt) return;
     this._prompt = html;
-    if (html) { e.innerHTML = html; e.classList.add('show'); } else e.classList.remove('show');
+    if (html) {
+      e.innerHTML = document.body.classList.contains('touch-layout')
+        ? html.replaceAll('<kbd>Space</kbd>', '<kbd>Brake</kbd>').replaceAll('<kbd>Q</kbd>', '<kbd>Flip</kbd>') : html;
+      e.classList.add('show');
+    } else e.classList.remove('show');
   }
 
   /** A card in the middle of the sky: small capitals, a name, a line under it. One at a time. */

@@ -22,6 +22,7 @@ import { Town } from './world/town.js';
 import { Places } from './world/places.js';
 import { Sound } from './audio/audio.js';
 import { Gameplay } from './game/index.js';
+import { TouchControls } from './ui/touch.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('view');
@@ -158,6 +159,7 @@ async function boot() {
   game.sound = new Sound();
 
   game.input = new Input(canvas);
+  game.touch = new TouchControls(game.input, game);
   const flight = (game.flight = new Flight(terrain));
   flight.river = river;
   flight.props = props;
@@ -187,13 +189,14 @@ function start() {
   if (game.state === 'play') return;
   game.state = 'play';
   game.input.enabled = true;
+  game.touch.refresh();
   game.chase.mode = 0;
   game.chase.orbit = 0;                      // (the title's sidelong view swings round behind her)
   game.sound.start();
   $('title').classList.add('gone');
   $('hud').hidden = false;
   // (where the lock is refused - an embedded frame, say - the keyboard still flies the broom)
-  canvas.requestPointerLock?.()?.catch?.(() => {});
+  if (game.touch.root.hidden && !navigator.maxTouchPoints && !game.touch.coarse.matches) canvas.requestPointerLock?.()?.catch?.(() => {});
 }
 
 // ---------------------------------------------------------------------------------- loop

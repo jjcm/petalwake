@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Petalwake</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..500&family=Karla:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./src/ui/style.css">
 <link rel="stylesheet" href="./src/ui/journal.css">
+<link rel="stylesheet" href="./src/ui/touch.css">
 <script type="importmap">
 { "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/examples/jsm/" } }
 </script>
@@ -46,6 +47,7 @@
     <div class="bar"><div class="bar-fill" id="loadFill"></div></div>
     <p class="status" id="loadStatus">gathering the wind…</p>
     <button id="start" hidden>Take off</button>
+    <p class="touch-help">Drag the left stick to steer. Hold Boost or Brake.<br>Double-tap Brake to land; tap once to take off.</p>
     <div class="keys" id="keys" hidden>
       <div><kbd>W</kbd><kbd>S</kbd> dive · climb</div>
       <div><kbd>A</kbd><kbd>D</kbd> bank</div>

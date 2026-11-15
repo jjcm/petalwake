@@ -1,0 +1,35 @@
+#view { touch-action: none; }
+.touch-help { display: none; }
+.touch-layout .touch-help { display: block; font-size: 13px; line-height: 1.5; }
+#touch-controls { position: fixed; inset: 0; z-index: 4; pointer-events: none; user-select: none; -webkit-user-select: none; }
+#touch-controls button, .touch-stick { touch-action: none; pointer-events: auto; -webkit-tap-highlight-color: transparent; }
+#touch-controls button { min-width: 56px; min-height: 48px; padding: 8px 12px; color: var(--ink); background: #122c43c9; border: 1px solid #fff8ec80; border-radius: 16px; font: 600 14px system-ui, sans-serif; }
+#touch-controls button.held { background: #7c4d63e6; }
+#touch-controls button:focus-visible { outline: 3px solid var(--gold); }
+.touch-stick { position: absolute; bottom: max(24px, env(safe-area-inset-bottom)); left: max(20px, env(safe-area-inset-left)); width: min(132px, 34vw); height: min(132px, 34vw); border: 1px solid #fff8ec66; border-radius: 50%; background: #122c4366; display: grid; place-items: center; }
+.touch-knob { width: 48px; height: 48px; border-radius: 50%; border: 1px solid #fff8ec99; background: #fff8ec44; pointer-events: none; }
+.touch-stick small { position: absolute; bottom: 10px; opacity: .8; pointer-events: none; }
+.touch-actions { position: absolute; bottom: max(30px, env(safe-area-inset-bottom)); right: max(20px, env(safe-area-inset-right)); display: flex; align-items: end; gap: 12px; }
+.touch-actions button { min-height: 70px !important; }
+.touch-tools { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: calc(max(30px, env(safe-area-inset-bottom)) + 86px); display: flex; gap: 6px; }
+.touch-tools button { font-size: 12px !important; padding: 6px !important; }
+.touch-layout .hud-bl { bottom: 176px; left: max(20px, env(safe-area-inset-left)); width: 130px; }
+.touch-layout .hud-br { bottom: 180px; right: 20px; font-size: 30px; }
+.touch-layout .prompt { bottom: 210px; max-width: 95vw; white-space: normal; flex-wrap: wrap; justify-content: center; font-size: 11px; letter-spacing: .06em; }
+.touch-layout .prompt small { display: none; }
+@media (max-width: 600px) {
+  .touch-layout .hud-tl { top: max(12px, env(safe-area-inset-top)); left: 14px; }
+  .touch-layout .seeds { font-size: 24px; }
+  .touch-layout .hud-tr { top: 90px; right: 14px; max-width: 75vw; }
+  .touch-layout .job-name { font-size: 20px; }
+  .touch-layout .job-meta { font-size: 10px; gap: 6px; }
+  .touch-layout .toast { white-space: normal; text-align: center; width: 90%; top: 35%; }
+  .touch-layout .keys { font-size: 11px; gap: 6px; margin-top: 16px; }
+  .touch-layout .title-inner { padding: 16px; }
+}
+@media (max-height: 500px) {
+  .touch-layout h1 { font-size: 56px; }
+  .touch-layout .kicker, .touch-layout .keys { display: none; }
+  .touch-layout .hud-tr { top: 55px; }
+  .touch-layout .hud-bl { bottom: 162px; }
+}
