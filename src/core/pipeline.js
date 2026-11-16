@@ -17,10 +17,15 @@ function pass(fragmentShader, uniforms) {
 }
 
 export class Pipeline {
-  constructor(renderer) {
+  constructor(renderer, graphics = {}) {
     this.renderer = renderer;
     this.reversed = renderer.capabilities.reversedDepthBuffer === true;
     this.scale = 1;
+    this.samples = Math.min(graphics.samples ?? 4, renderer.capabilities.maxSamples ?? 4);
+    this.bloomEnabled = graphics.bloom !== false;
+    this.raysEnabled = graphics.rays !== false;
+    this.black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+    this.black.needsUpdate = true;
     this.quad = new THREE.Mesh(tri, null);
     this.quad.frustumCulled = false;
     this.quadScene = new THREE.Scene();
@@ -45,6 +50,9 @@ export class Pipeline {
       contrast: 1.04,
       speed: 0,           // 0..1, drives the speed-dependent lens effects
     };
+    if (graphics.blur === false) this.params.blur = 0;
+    if (!this.bloomEnabled) this.params.bloom = 0;
+    if (!this.raysEnabled) this.params.rays = 0;
 
     const depthU = { value: null };
     this.uDepth = depthU;
@@ -94,22 +102,22 @@ export class Pipeline {
     const depth = new THREE.DepthTexture(W, H, THREE.FloatType);
     depth.format = THREE.DepthFormat;
     this.sceneRT = new THREE.WebGLRenderTarget(W, H, {
-      type: THREE.HalfFloatType, format: THREE.RGBAFormat, samples: 4, depthBuffer: true, depthTexture: depth,
+      type: THREE.HalfFloatType, format: THREE.RGBAFormat, samples: this.samples, depthBuffer: true, depthTexture: depth,
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false,
     });
     // second target: blurred world + sharp rider/particles (own depth buffer for the rider's self-occlusion)
     this.compRT = new THREE.WebGLRenderTarget(W, H, {
-      type: THREE.HalfFloatType, format: THREE.RGBAFormat, samples: 4, depthBuffer: true,
+      type: THREE.HalfFloatType, format: THREE.RGBAFormat, samples: this.samples, depthBuffer: true,
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false,
     });
     this.bloom = [];
     let bw = W >> 1, bh = H >> 1;
-    for (let i = 0; i < 7 && bw > 4 && bh > 4; i++) {
+    for (let i = 0; this.bloomEnabled && i < 7 && bw > 4 && bh > 4; i++) {
       this.bloom.push(new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter }));
       bw >>= 1; bh >>= 1;
     }
     this.bloomUp = this.bloom.slice(0, -1).map((rt) => rt.clone());
-    this.raysRT = new THREE.WebGLRenderTarget(W >> 1, H >> 1, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+    this.raysRT = this.raysEnabled ? new THREE.WebGLRenderTarget(W >> 1, H >> 1, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter }) : null;
     this.uDepth.value = depth;
     this.uScene.value = this.sceneRT.texture;
   }
@@ -145,39 +153,44 @@ export class Pipeline {
     r.render(this.overlay, camera);
 
     // 4. bloom
-    let src = this.compRT.texture;
-    for (let i = 0; i < this.bloom.length; i++) {
-      const rt = this.bloom[i];
-      this.downMat.uniforms.tColor.value = src;
-      this.downMat.uniforms.uTexel.value.set(1 / (rt.width * 2), 1 / (rt.height * 2));
-      this.downMat.uniforms.uFirst.value = i === 0 ? 1 : 0;
-      this._blit(this.downMat, rt);
-      src = rt.texture;
-    }
-    for (let i = this.bloom.length - 2; i >= 0; i--) {
-      const rt = this.bloomUp[i];
-      this.upMat.uniforms.tColor.value = src;
-      this.upMat.uniforms.tAdd.value = this.bloom[i].texture;
-      this.upMat.uniforms.uTexel.value.set(1 / rt.width, 1 / rt.height);
-      this._blit(this.upMat, rt);
-      src = rt.texture;
+    let src = this.black;
+    if (this.bloomEnabled && p.bloom > 0) {
+      src = this.compRT.texture;
+      for (let i = 0; i < this.bloom.length; i++) {
+        const rt = this.bloom[i];
+        this.downMat.uniforms.tColor.value = src;
+        this.downMat.uniforms.uTexel.value.set(1 / (rt.width * 2), 1 / (rt.height * 2));
+        this.downMat.uniforms.uFirst.value = i === 0 ? 1 : 0;
+        this._blit(this.downMat, rt);
+        src = rt.texture;
+      }
+      for (let i = this.bloom.length - 2; i >= 0; i--) {
+        const rt = this.bloomUp[i];
+        this.upMat.uniforms.tColor.value = src;
+        this.upMat.uniforms.tAdd.value = this.bloom[i].texture;
+        this.upMat.uniforms.uTexel.value.set(1 / rt.width, 1 / rt.height);
+        this._blit(this.upMat, rt);
+        src = rt.texture;
+      }
     }
 
     // 5. god rays from the sun's screen position
-    const sun = this._sun || (this._sun = new THREE.Vector3());
-    sun.copy(U.uSunDir.value).multiplyScalar(1e5).add(camera.position).project(camera);
-    const camDir = camera.getWorldDirection(this._cd || (this._cd = new THREE.Vector3()));
-    const facing = camDir.dot(U.uSunDir.value);
-    this.raysMat.uniforms.tColor.value = this.compRT.texture;
-    this.raysMat.uniforms.uSun.value.set(sun.x * 0.5 + 0.5, sun.y * 0.5 + 0.5, Math.max(0, (facing - 0.15) / 0.85));
-    this.raysMat.uniforms.uAspect.value = this.size.x / this.size.y;
-    this._blit(this.raysMat, this.raysRT);
+    if (this.raysEnabled && p.rays > 0) {
+      const sun = this._sun || (this._sun = new THREE.Vector3());
+      sun.copy(U.uSunDir.value).multiplyScalar(1e5).add(camera.position).project(camera);
+      const camDir = camera.getWorldDirection(this._cd || (this._cd = new THREE.Vector3()));
+      const facing = camDir.dot(U.uSunDir.value);
+      this.raysMat.uniforms.tColor.value = this.compRT.texture;
+      this.raysMat.uniforms.uSun.value.set(sun.x * 0.5 + 0.5, sun.y * 0.5 + 0.5, Math.max(0, (facing - 0.15) / 0.85));
+      this.raysMat.uniforms.uAspect.value = this.size.x / this.size.y;
+      this._blit(this.raysMat, this.raysRT);
+    }
 
     // 6. lens + grade
     const f = this.finalMat.uniforms;
     f.tColor.value = this.compRT.texture;
     f.tBloom.value = src;
-    f.tRays.value = this.raysRT.texture;
+    f.tRays.value = this.raysRT?.texture || this.black;
     f.uExposure.value = p.exposure;
     f.uBloom.value = p.bloom;
     f.uDistort.value = p.distortion;
@@ -369,9 +382,8 @@ void main(){
   col.g = texture(tColor, uv).g;
   col.b = texture(tColor, lens(vUv - dir, k)).b;
   if (any(isnan(col)) || any(isinf(col))) col = vec3(0.0);
-  vec3 bloom = texture(tBloom, uv).rgb;
-  col += bloom * uBloom;
-  col += texture(tRays, uv).rgb * uRays * uSunColor * 0.085;
+  if (uBloom > 0.0) col += texture(tBloom, uv).rgb * uBloom;
+  if (uRays > 0.0) col += texture(tRays, uv).rgb * uRays * uSunColor * 0.085;
   col *= uExposure;
   // vignette (natural cos^4-ish falloff)
   float v = 1.0 - uVignette * smoothstep(0.25, 1.15, r) * (0.75 + 0.25 * r);

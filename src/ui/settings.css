@@ -1,0 +1,16 @@
+#settings-button { position: fixed; right: max(12px, env(safe-area-inset-right)); top: max(8px, env(safe-area-inset-top)); z-index: 7; }
+#settings-button, #settings-panel button, #settings-panel select { color: var(--ink); background: #183149; border: 1px solid #fff8ec80; border-radius: 8px; min-height: 44px; padding: 8px 12px; font: inherit; cursor: pointer; }
+#settings-panel { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; border: 1px solid #fff8ec66; border-radius: 18px; background: #0e2032; color: var(--ink); padding: 20px; }
+#settings-panel::backdrop { background: #040d18bb; }
+#settings-panel header { display: flex; gap: 12px; justify-content: space-between; align-items: center; }
+#settings-panel h2 { font: 400 28px 'Fraunces', Georgia, serif; margin: 0; }
+#settings-panel p { font-size: 14px; line-height: 1.5; opacity: .85; }
+#settings-panel label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; }
+#settings-panel select { max-width: 54%; }
+#settings-panel .render-scale { display: flex; align-items: center; gap: 10px; }
+#settings-panel input[type="range"] { width: min(36vw, 180px); min-height: 44px; margin: 0; accent-color: var(--gold); }
+#settings-panel output { min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
+#settings-panel input:focus-visible { outline: 3px solid var(--gold); }
+#settings-panel footer { text-align: right; }
+#settings-panel button:focus-visible, #settings-panel select:focus-visible, #settings-button:focus-visible { outline: 3px solid var(--gold); }
+.hud-tr { top: 64px; }

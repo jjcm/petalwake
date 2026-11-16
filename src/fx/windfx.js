@@ -28,11 +28,11 @@ export function petalColor(s, r) {
 }
 
 export class WindFX {
-  constructor(terrain, noise, depthUniform) {
+  constructor(terrain, noise, depthUniform, particleBudget = 1) {
     this.terrain = terrain;
     this.noise = noise;
-    this.flakes = new Flakes(12000);
-    this.sprites = new Sprites(depthUniform, 7000);
+    this.flakes = new Flakes(Math.max(1, Math.round(12000 * particleBudget)));
+    this.sprites = new Sprites(depthUniform, Math.max(1, Math.round(7000 * particleBudget)));
     this.ribbons = [new Ribbon(44, 0.7), new Ribbon(44, 0.7)];
     this.group = new THREE.Group();
     this.group.add(this.flakes.mesh, this.sprites.mesh, this.ribbons[0].mesh, this.ribbons[1].mesh);

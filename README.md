@@ -84,8 +84,14 @@ python3 tools/serve.py
 Then open <http://localhost:6280>. Any static file server works just as well (it has to be served
 over HTTP; opening `index.html` from disk will not load the modules).
 
-Options in the URL: `?q=low|medium|high` sets the meadow density, `?dpr=1.5` sets the pixel ratio,
-`?noscale` turns off the automatic resolution scaling, `?play` skips the title screen.
+Options in the URL: `?q=low|medium|high` sets meadow density, `?scale=50` renders
+at 50% of the screen's native width and height, `?noscale` turns off adaptive
+resolution, and `?play` skips the title screen. Legacy `?dpr=1.5` overrides are
+converted to render-scale percentages.
+
+Use **Settings** for saved Ultra-low, Low, Medium and High graphics presets and
+individual quality controls. Touch devices default to Low. See
+[graphics settings and performance details](docs/graphics-settings.md).
 
 It has been developed and checked in Chrome only.
 

@@ -15,6 +15,7 @@ const SHARED = [...SKY_UNIFORMS, 'uTime', 'uHeightTex', 'uSplatTex', 'uLightTex'
 // shell definitions. fade = [in0, in1, out0, out1] (metres from camera)
 // ----------------------------------------------------------------------------------------
 export const QUALITY = {
+  minimal: { grass: 0.1, flowers: 0.15 },
   high: { grass: 1.0, flowers: 1.0 },
   medium: { grass: 0.6, flowers: 0.7 },
   low: { grass: 0.33, flowers: 0.45 },

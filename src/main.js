@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { U, World, applyEnv } from './core/ctx.js';
 import { Pipeline } from './core/pipeline.js';
+import { loadSettings, frameDue, renderPixelRatio } from './core/settings.js';
+import { createSettingsUI } from './ui/settings.js';
 import { Terrain, makeNoiseTexture } from './world/terrain.js';
 import { Sky } from './world/sky.js';
 import { Water } from './world/water.js';
@@ -26,21 +28,25 @@ import { Gameplay } from './game/index.js';
 const $ = (id) => document.getElementById(id);
 const canvas = $('view');
 const params = new URLSearchParams(location.search);
+let storage;
+try { storage = localStorage; } catch { /* private browsing */ }
+const mobile = matchMedia('(any-pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+const graphics = loadSettings(storage, params, mobile, window.devicePixelRatio);
 
 const renderer = new THREE.WebGLRenderer({
   canvas, antialias: false, alpha: false, depth: false, stencil: false,
-  powerPreference: 'high-performance', reversedDepthBuffer: true,
+  powerPreference: graphics.fps === 30 ? 'low-power' : 'high-performance', reversedDepthBuffer: true,
 });
 renderer.autoClear = true;
 renderer.setClearColor(0x000000, 1);
 renderer.toneMapping = THREE.NoToneMapping;
 renderer.info.autoReset = false;
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = graphics.shadows;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 
 const camera = new THREE.PerspectiveCamera(64, 1, 0.3, 60000);
 const world = new THREE.Scene();
-const pipeline = new Pipeline(renderer);
+const pipeline = new Pipeline(renderer, graphics);
 // without a reversed depth buffer (no EXT_clip_control) pull the planes in to keep distant water stable
 if (!pipeline.reversed) { camera.near = 1.2; camera.far = 40000; camera.updateProjectionMatrix(); }
 const game = {
@@ -48,8 +54,9 @@ const game = {
   time: 0, paused: false, ready: false, state: 'title', fov: 64,
 };
 window.PW = game;
+game.graphics = graphics;
+createSettingsUI(game, graphics);
 
-let maxDpr = Number(params.get('dpr')) || 1.5;
 function applyFov() {
   // hold the horizontal field of view on very wide screens instead of letting it balloon
   const baseV = game.fov, hLimit = 122;
@@ -60,7 +67,7 @@ function applyFov() {
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   if (!w || !h) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+  const dpr = renderPixelRatio(graphics.renderScale, window.devicePixelRatio);
   renderer.setPixelRatio(dpr);
   renderer.setSize(w, h, false);
   pipeline.setSize(w, h, dpr);
@@ -103,22 +110,24 @@ async function boot() {
   await tick();
 
   setLoad(0.4, 'sowing the meadows…');
-  const meadow = (game.meadow = new Meadow(terrain, params.get('q') || 'high'));
+  const meadow = (game.meadow = new Meadow(terrain, graphics.meadow));
   world.add(meadow.group);
 
   const sky = (game.sky = new Sky());
   world.add(sky.mesh);
-  const clouds = (game.clouds = new CloudBaker(renderer));
-  clouds.begin();
-  while (!clouds.done) {
-    setLoad(0.45 + 0.4 * clouds.step(2), 'painting the sky…');
-    await tick();
+  if (graphics.clouds) {
+    const clouds = (game.clouds = new CloudBaker(renderer));
+    clouds.begin();
+    while (!clouds.done) {
+      setLoad(0.45 + 0.4 * clouds.step(2), 'painting the sky…');
+      await tick();
+    }
+    sky.cloudTex.value = clouds.texture;
+    sky.cloudOn.value = 1;
   }
-  sky.cloudTex.value = clouds.texture;
-  sky.cloudOn.value = 1;
 
   const water = (game.water = new Water(sky));
-  water.setupReflection(renderer, terrain);
+  if (graphics.reflections) water.setupReflection(renderer, terrain);
   world.add(water.mesh);
   const river = (game.river = new River(terrain, terrain.meta, sky));
   world.add(river.group);
@@ -144,13 +153,13 @@ async function boot() {
   vortex.river = river;
   game.wake = new Wake(renderer, vortex);
   game.strip = new Strip(renderer, vortex);
-  const fx = (game.fx = new WindFX(terrain, noise, pipeline.uDepth));
+  const fx = (game.fx = new WindFX(terrain, noise, pipeline.uDepth, graphics.particles));
   fx.vortex = vortex;
   fx.strip = game.strip;
   pipeline.overlay.add(fx.group);
   // the shore: tide lines, what clings to the rocks, and the crabs. Decoration only, so it is loaded
   // on its own: if the module or its assets fail, the game goes on without it.
-  const shore = (game.shore = await import('./world/shore.js').then((m) => m.Shore.load(renderer, terrain)).catch((e) => (console.error(e), null)));
+  const shore = (game.shore = graphics.shore ? await import('./world/shore.js').then((m) => m.Shore.load(renderer, terrain)).catch((e) => (console.error(e), null)) : null);
   if (shore) world.add(shore.attach({ camera, fx, water, town, overlay: pipeline.overlay }).group);
   const seeds = (game.seeds = new Seeds(terrain, terrain.meta));
   pipeline.overlay.add(seeds.group);
@@ -179,7 +188,7 @@ async function boot() {
   $('keys').hidden = false;
   $('start').addEventListener('click', start);
   if (params.has('debug')) $('title').classList.add('gone');
-  if (params.has('play')) start();
+  if (params.has('play') && !$('settings-panel').open) start();
   requestAnimationFrame(frame);
 }
 
@@ -197,11 +206,11 @@ function start() {
 }
 
 // ---------------------------------------------------------------------------------- loop
-let last = 0;
+let last = 0, frameDeadline = 0;
 // Adaptive resolution: if the machine cannot hold the frame rate, render fewer pixels rather than
 // drop frames; climb back when there is headroom. Steps are coarse and rare (each one reallocates).
 const SCALES = [1, 0.85, 0.72, 0.6, 0.5];
-const auto = { i: 0, acc: 0, n: 0, hold: 3, good: 0, on: !params.has('noscale') && !params.has('debug') };
+const auto = { i: 0, acc: 0, n: 0, hold: 3, good: 0, on: graphics.adaptive };
 function autoScale(rawDt) {
   if (!auto.on || rawDt > 0.25) return;          // ignore hitches (tab switches, loading)
   auto.acc += rawDt; auto.n++;
@@ -210,9 +219,10 @@ function autoScale(rawDt) {
   auto.acc = 0; auto.n = 0;
   if (auto.hold > 0) { auto.hold--; return; }
   let next = auto.i;
-  if (avg > 1 / 48 && auto.i < SCALES.length - 1) next++;
-  else if (avg < 1 / 58 && auto.i > 0 && auto.good++ > 4) next--;
-  if (avg >= 1 / 58) auto.good = 0;
+  const target = graphics.fps || 60;
+  if (avg > 1 / (target * 0.8) && auto.i < SCALES.length - 1) next++;
+  else if (avg < 1 / (target * 0.96) && auto.i > 0 && auto.good++ > 4) next--;
+  if (avg >= 1 / (target * 0.96)) auto.good = 0;
   if (next !== auto.i) {
     auto.i = next; auto.hold = 2; auto.good = 0;
     pipeline.scale = SCALES[next];
@@ -223,10 +233,14 @@ game.auto = auto;
 function frame(now) {
   requestAnimationFrame(frame);
   if (game.capturing) return;
+  if (document.hidden) { last = 0; frameDeadline = 0; return; }
+  const due = frameDue(now, frameDeadline, graphics.fps);
+  frameDeadline = due.deadline;
+  if (!due.due) return;
   const raw = (now - last) / 1000 || 0.016;
   const dt = Math.min(raw, 0.05);
   last = now;
-  autoScale(raw);
+  if (!game.paused) autoScale(raw);
   if (!game.paused) step(dt);
   render(dt);
 }
@@ -340,7 +354,7 @@ function render(dt) {
   if (!pipeline.sceneRT) { resize(); if (!pipeline.sceneRT) return; }
   camera.updateMatrixWorld();
   U.uCamPos.value.copy(camera.position);
-  game.rider.renderShadow(pipeline.reversed);
+  if (graphics.shadows) game.rider.renderShadow(pipeline.reversed);
   game.water.renderReflection(camera, pipeline.size);
   game.terrain.select(game.terrain.mainView, camera);
   game.meadow.update(camera);
